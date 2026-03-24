@@ -1,129 +1,190 @@
-import 'dotenv/config';
-import Groq from "groq-sdk"; 
+import express from "express";
+import cors from "cors";
+import "dotenv/config";
+import { AIProjectClient } from "@azure/ai-projects";
+import { DefaultAzureCredential } from "@azure/identity";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
-// Initialize Groq (Make sure GROQ_API_KEY is in your .env file)
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
+const app = express();
+app.use(cors());
+app.use(express.json());
 
-// Sauti Porini's operational boundaries
-const SYSTEM_PROMPT = `
-You are Sauti Porini, an autonomous environmental protection agent operating in Kenya. 
+const PORT = process.env.PORT || 3000;
+
+// Global clients persisted across requests
+let mcpClient, openAIClient, agent, azureTools;
+
+const SYSTEM_PROMPT = `You are Sauti Porini, an autonomous environmental protection agent operating in Kenya. 
 Your primary directive is to analyze incoming environmental data (acoustic sensors, satellite imagery, weather conditions) to detect and verify illegal logging, poaching, or forest fires.
 
 When you receive a threat alert:
 1. Analyze the raw data for severity and confidence.
 2. Cross-reference the location with local weather and terrain data using your available tools.
 3. If the threat is verified, draft a localized, concise dispatch alert for human rangers.
-4. Do NOT take irreversible actions (like dispatching emergency services) without human-in-the-loop verification from the command dashboard.
+4. Do NOT take irreversible actions without human-in-the-loop verification.
 
-Maintain a professional, urgent, and analytical tone. Focus on accuracy to prevent false positives.
-`;
+Maintain a professional, urgent, and analytical tone.`;
 
-async function main() {
-  console.log("Initializing Sauti Porini Agentic Subsystem...");
-  console.log("System Prompt Loaded.");
-  console.log("Connecting to MCP Server...");
+// Initialize external services on startup
+async function initServices() {
+  console.log("Booting Sauti Porini Agent Services...");
 
-  // setup and connect MCP Client
+  // Connect MCP Server
   const transport = new StdioClientTransport({
-    command: "node", 
-    args: ["./src/mcp-server.js"] 
+    command: "node",
+    args: ["./src/mcp-server.js"],
+  });
+  mcpClient = new Client(
+    { name: "sauti-porini-orchestrator", version: "1.0.0" },
+    { capabilities: {} },
+  );
+  await mcpClient.connect(transport);
+  console.log("✓ MCP Server Online");
+
+  // Get MCP tools
+  const mcpToolsResponse = await mcpClient.listTools();
+  azureTools = mcpToolsResponse.tools.map((tool) => ({
+    type: "function",
+    name: tool.name,
+    description: tool.description,
+    parameters: tool.inputSchema,
+  }));
+
+  // Connect Azure Foundry
+  const project = new AIProjectClient(
+    process.env.AZURE_AI_PROJECT_ENDPOINT,
+    new DefaultAzureCredential(),
+  );
+  openAIClient = await project.getOpenAIClient();
+
+  agent = await project.agents.createVersion("sauti-porini", {
+    kind: "prompt",
+    model: process.env.AZURE_OPENAI_DEPLOYMENT || "gpt-4o-mini",
+    instructions: SYSTEM_PROMPT,
+    tools: azureTools,
   });
 
-  const mcpClient = new Client({
-    name: "sauti-porini-orchestrator",
-    version: "1.0.0"
-  }, {
-    capabilities: {}
-  });
-
-  try {
-    await mcpClient.connect(transport);
-    console.log("Successfully connected to the Sauti Porini MCP Server!");
-
-    console.log("Asking the MCP Server for its available tools...");
-    
-    // fetch the tools from your mcp server
-    const mcpToolsResponse = await mcpClient.listTools();
-
-    // translate the MCP format into the format Groq expects
-    const groqTools = mcpToolsResponse.tools.map(tool => ({
-      type: "function",
-      function: {
-        name: tool.name,
-        description: tool.description,
-        // MCP calls it inputSchema, Groq calls it parameters
-        parameters: tool.inputSchema 
-      }
-    }));
-
-    console.log(`Automatically discovered and mapped ${groqTools.length} tools!`);
-
-    // setup conversation history
-    let messages = [
-      { role: "system", content: SYSTEM_PROMPT },
-      { role: "user", content: "Please check the acoustic sensors in SECTOR-7-KAKAMEGA. If there is a critical threat, take appropriate action." }
-    ];
-
-    // Limit to  5 iterations to prevent the agent from getting stuck in an infinite loop
-    let iteration = 0;
-    const MAX_ITERATIONS = 5;
-    let isDone = false;
-
-    while (!isDone && iteration < MAX_ITERATIONS) {
-      iteration++;
-      console.log(`\n[Iteration ${iteration}] Agent is thinking...`);
-
-      // Ask Groq what to do next based on the current conversation history
-      const response = await groq.chat.completions.create({
-        model: "llama-3.1-8b-instant", 
-        messages: messages,
-        tools: groqTools,
-        tool_choice: "auto"
-      });
-
-      const responseMessage = response.choices[0].message;
-      messages.push(responseMessage); // Save Groq's response to history
-
-      // Check if Groq decided it needs to use a tool
-      if (responseMessage.tool_calls) {
-        for (const toolCall of responseMessage.tool_calls) {
-          console.log(`\n  Agent decided to use tool: ${toolCall.function.name}`);
-          
-          const args = JSON.parse(toolCall.function.arguments);
-          
-          // Execute the actual tool on your MCP Server
-          const mcpResult = await mcpClient.callTool({
-            name: toolCall.function.name,
-            arguments: args
-          });
-
-          const resultText = mcpResult.content[0].text;
-          console.log(" Tool Execution Result:", resultText);
-
-          // CRITICAL: Feed the result back to Groq so it can analyze the data
-          messages.push({
-            tool_call_id: toolCall.id,
-            role: "tool",
-            name: toolCall.function.name,
-            content: resultText,
-          });
-        }
-      } else {
-        // If no tools were called, the agent has finished its task and is talking to us normally
-        console.log(`\n Agent Final Report:\n${responseMessage.content}`);
-        isDone = true;
-      }
-    }
-
-    if (iteration >= MAX_ITERATIONS) {
-       console.log("\n Reached maximum iterations. Forcing stop to prevent infinite loop.");
-    }
-
-  } catch (error) {
-    console.error("Failed to connect or execute:", error);
-  }
+  console.log(
+    `System Ready! Agent ${agent.name} v${agent.version} listening on port ${PORT}`,
+  );
 }
 
-main().catch(console.error);
+// API endpoint for threat analysis with Server-Sent Events
+app.post("/api/analyze", async (req, res) => {
+  const { sectorId = "SECTOR-7-KAKAMEGA" } = req.body;
+
+  // Setup Server-Sent Events for streaming
+  res.writeHead(200, {
+    "Content-Type": "text/event-stream",
+    "Cache-Control": "no-cache",
+    Connection: "keep-alive",
+  });
+
+  // Send real-time updates to frontend
+  const sendUpdate = (type, message) => {
+    res.write(`data: ${JSON.stringify({ type, message })}\n\n`);
+  };
+
+  try {
+    sendUpdate(
+      "status",
+      `Alert received for ${sectorId}. Creating Investigation Thread...`,
+    );
+
+    const conversation = await openAIClient.conversations.create({
+      items: [
+        {
+          type: "message",
+          role: "user",
+          content: `Please check the acoustic sensors in ${sectorId}. If there is a critical threat, take appropriate action.`,
+        },
+      ],
+    });
+
+    let response = await openAIClient.responses.create(
+      { conversation: conversation.id },
+      { body: { agent: { name: agent.name, type: "agent_reference" } } },
+    );
+
+    let iterations = 0;
+    const MAX_ITERATIONS = 5;
+
+    while (iterations < MAX_ITERATIONS) {
+      const functionCalls = response.output.filter(
+        (item) => item.type === "function_call",
+      );
+
+      if (functionCalls.length === 0) {
+        sendUpdate("complete", response.output_text);
+        break;
+      }
+
+      sendUpdate(
+        "thinking",
+        `Iteration ${iterations + 1}: Agent analyzing data...`,
+      );
+      const toolResults = [];
+
+      for (const call of functionCalls) {
+        sendUpdate("tool_execution", `🛠️ Executing: ${call.name}`);
+
+        const args = JSON.parse(call.arguments);
+        const mcpResult = await mcpClient.callTool({
+          name: call.name,
+          arguments: args,
+        });
+        const resultText = mcpResult.content[0].text;
+
+        sendUpdate("tool_result", `Result: ${resultText.substring(0, 200)}`);
+
+        const safeCallId = call.call_id || call.id;
+        toolResults.push({
+          type: "function_call_output",
+          call_id: safeCallId,
+          output: resultText,
+        });
+      }
+
+      // Submit tool results back to Azure
+      response = await openAIClient.responses.create(
+        {
+          input: toolResults,
+          previous_response_id: response.id,
+        },
+        {
+          body: { agent: { name: agent.name, type: "agent_reference" } },
+        },
+      );
+
+      iterations++;
+    }
+  } catch (error) {
+    console.error("Error during execution:", error);
+    sendUpdate(
+      "error",
+      `System failure: ${error.message || "Unknown error"}`,
+    );
+  } finally {
+    res.end();
+  }
+});
+
+// Health check endpoint
+app.get("/health", (req, res) => {
+  res.json({ status: "ok", agent: agent?.name || "not initialized" });
+});
+
+// Start server
+initServices()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(
+        `\n Sauti Porini Agent Backend running at http://localhost:${PORT}`,
+      );
+    });
+  })
+  .catch((error) => {
+    console.error("Failed to initialize services:", error);
+    process.exit(1);
+  });
