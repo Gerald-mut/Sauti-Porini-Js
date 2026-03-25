@@ -3,8 +3,12 @@ import mongoose from 'mongoose';
 const AlertSchema = new mongoose.Schema({
   sectorId: String,
   threatType: String, //for fire, logging or ussd
-  confidence: Number,
-  status: { type: String, default: 'Unverified' }, //can be unverified, resolved or confirmed
+  lat: Number,
+  lon: Number,
+  confidence: String,
+  phone_number: String,
+  blockchain_proof: String,
+  sound_type: String,
   dispatchMessage: String,
   timestamp: { type: Date, default: Date.now }
 });

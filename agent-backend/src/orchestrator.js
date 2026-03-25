@@ -1,13 +1,25 @@
-import express from "express";
-import cors from "cors";
-import "dotenv/config";
+import express from "express"; //handles http requests
+import cors from "cors"; //cors allows my server to accept requests from different websites
+import "dotenv/config"; //this loads my env variables
 import mongoose from "mongoose";
 import { AIProjectClient } from "@azure/ai-projects";
 import { DefaultAzureCredential } from "@azure/identity";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
-import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
-import cron from "node-cron";
+import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"; // tools for communicating with a custom ai server
+import cron from "node-cron"; //schedules automatic tasks
 import { Alert } from "./models/alert.js";
+
+// A simple translation layer for Kakamega Forest sectors
+const SECTOR_MAP = {
+  "SECTOR-7-KAKAMEGA": { lat: 0.235, lon: 34.852 },
+  "SECTOR-8-KAKAMEGA": { lat: 0.241, lon: 34.881 },
+  // Default fallback if a new sector is added
+  DEFAULT: { lat: 0.23, lon: 34.85 },
+};
+
+// Example of how to use it when saving an alert:
+// const coords = SECTOR_MAP[sectorId] || SECTOR_MAP["DEFAULT"];
+// await Alert.create({ ..., lat: coords.lat, lon: coords.lon });
 
 const app = express();
 app.use(cors());
@@ -17,14 +29,15 @@ const PORT = process.env.PORT || 3000;
 
 // Connect to MongoDB
 if (process.env.MONGODB_URI) {
-  mongoose.connect(process.env.MONGODB_URI)
+  mongoose
+    .connect(process.env.MONGODB_URI)
     .then(() => console.log("MongoDB connected"))
-    .catch(err => console.log("MongoDB offline:", err.message));
+    .catch((err) => console.log("MongoDB offline:", err.message));
 } else {
-  console.log("MONGODB_URI not set in .env - database features disabled");
+  console.log("set mongodb url in .env");
 }
 
-// Global clients persisted across requests
+//for holding connections to external services
 let mcpClient, openAIClient, agent, azureTools;
 
 const SYSTEM_PROMPT = `You are Sauti Porini, an autonomous environmental protection agent operating in Kenya. 
@@ -38,11 +51,11 @@ When you receive a threat alert:
 
 Maintain a professional, urgent, and analytical tone.`;
 
-// Initialize external services on startup
+//connect to external services
 async function initServices() {
   console.log("Booting Sauti Porini Agent Services...");
 
-  // Connect MCP Server
+  //connec to mcp via stdio(runs node.js script as a subprocess)
   const transport = new StdioClientTransport({
     command: "node",
     args: ["./src/mcp-server.js"],
@@ -82,7 +95,7 @@ async function initServices() {
   );
 }
 
-// Proactive forest patrol - runs every 5 minutes
+//runs every 5 minutes
 cron.schedule("*/5 * * * *", async () => {
   console.log("[WATCHTOWER] Starting forest patrol...");
 
@@ -153,11 +166,14 @@ cron.schedule("*/5 * * * *", async () => {
 
     // Save alert if threat detected
     if (agentFoundThreat) {
+      const coords = SECTOR_MAP[sectorId] || SECTOR_MAP["DEFAULT"];
       await Alert.create({
-        sectorId: "SECTOR-7-KAKAMEGA", // Could be enhanced to detect from response
-        threatType: "Logging", // Could be enhanced to detect from response
-        confidence: 0.94, // Could be enhanced to extract from response
+        sectorId: "SECTOR-7-KAKAMEGA",
+        threatType: "Logging",
+        confidence: 0.94,
         dispatchMessage: response.output_text,
+        lat: coords.lat,
+        lon: coords.lon,
       });
       console.log("[WATCHTOWER] Alert saved to database!");
     }
@@ -302,6 +318,19 @@ app.post("/api/ussd", async (req, res) => {
         { conversation: conversation.id },
         { body: { agent: { name: agent.name, type: "agent_reference" } } },
       );
+
+      // Save alert with coordinates
+      const coords = SECTOR_MAP[targetSector] || SECTOR_MAP["DEFAULT"];
+      await Alert.create({
+        sectorId: targetSector,
+        threatType: "Logging",
+        confidence: 0.8,
+        dispatchMessage: "Community report via USSD",
+        phone_number: phoneNumber,
+        lat: coords.lat,
+        lon: coords.lon,
+      });
+      console.log(`[USSD] Alert saved for ${targetSector}`);
     } catch (error) {
       console.error("Failed to trigger agent from USSD:", error);
     }
@@ -320,7 +349,7 @@ app.get("/health", (req, res) => {
 });
 
 //connect to the frontend
-app.get('/api/alerts', async (req, res) => {
+app.get("/api/alerts", async (req, res) => {
   try {
     // Fetch the 10 most recent alerts from Cosmos DB, newest first
     const alerts = await Alert.find().sort({ timestamp: -1 }).limit(10);
