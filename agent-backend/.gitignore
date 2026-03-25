@@ -2,5 +2,5 @@
 node_modules/
 dist/
 build/
-DEBUG_GUIDE
+DEBUG_GUIDE.md
 FIX_SUMMARY.md

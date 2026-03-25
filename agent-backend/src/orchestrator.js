@@ -40,7 +40,7 @@ async function initServices() {
     { capabilities: {} },
   );
   await mcpClient.connect(transport);
-  console.log("✓ MCP Server Online");
+  console.log("MCP Server Online");
 
   // Get MCP tools
   const mcpToolsResponse = await mcpClient.listTools();
@@ -127,7 +127,7 @@ app.post("/api/analyze", async (req, res) => {
       const toolResults = [];
 
       for (const call of functionCalls) {
-        sendUpdate("tool_execution", `🛠️ Executing: ${call.name}`);
+        sendUpdate("tool_execution", `Executing: ${call.name}`);
 
         const args = JSON.parse(call.arguments);
         const mcpResult = await mcpClient.callTool({
