@@ -1,16 +1,28 @@
 import express from "express";
 import cors from "cors";
 import "dotenv/config";
+import mongoose from "mongoose";
 import { AIProjectClient } from "@azure/ai-projects";
 import { DefaultAzureCredential } from "@azure/identity";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import cron from "node-cron";
+import { Alert } from "./models/alert.js";
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
+
+// Connect to MongoDB
+if (process.env.MONGODB_URI) {
+  mongoose.connect(process.env.MONGODB_URI)
+    .then(() => console.log("MongoDB connected"))
+    .catch(err => console.log("MongoDB offline:", err.message));
+} else {
+  console.log("MONGODB_URI not set in .env - database features disabled");
+}
 
 // Global clients persisted across requests
 let mcpClient, openAIClient, agent, azureTools;
@@ -69,6 +81,90 @@ async function initServices() {
     `System Ready! Agent ${agent.name} v${agent.version} listening on port ${PORT}`,
   );
 }
+
+// Proactive forest patrol - runs every 5 minutes
+cron.schedule("*/5 * * * *", async () => {
+  console.log("[WATCHTOWER] Starting forest patrol...");
+
+  try {
+    const conversation = await openAIClient.conversations.create({
+      items: [
+        {
+          type: "message",
+          role: "user",
+          content:
+            "Perform a routine security sweep. Check satellite data for SECTOR-7 and SECTOR-8. If a threat is confirmed, draft a dispatch.",
+        },
+      ],
+    });
+
+    let response = await openAIClient.responses.create(
+      { conversation: conversation.id },
+      { body: { agent: { name: agent.name, type: "agent_reference" } } },
+    );
+
+    let iterations = 0;
+    const MAX_ITERATIONS = 5;
+    let agentFoundThreat = false;
+
+    while (iterations < MAX_ITERATIONS) {
+      const functionCalls = response.output.filter(
+        (item) => item.type === "function_call",
+      );
+
+      if (functionCalls.length === 0) {
+        // Check if agent produced a dispatch (indicating threat found)
+        if (response.output_text && response.output_text.includes("dispatch")) {
+          agentFoundThreat = true;
+        }
+        break;
+      }
+
+      const toolResults = [];
+
+      for (const call of functionCalls) {
+        const args = JSON.parse(call.arguments);
+        const mcpResult = await mcpClient.callTool({
+          name: call.name,
+          arguments: args,
+        });
+        const resultText = mcpResult.content[0].text;
+
+        const safeCallId = call.call_id || call.id;
+        toolResults.push({
+          type: "function_call_output",
+          call_id: safeCallId,
+          output: resultText,
+        });
+      }
+
+      response = await openAIClient.responses.create(
+        {
+          input: toolResults,
+          previous_response_id: response.id,
+        },
+        {
+          body: { agent: { name: agent.name, type: "agent_reference" } },
+        },
+      );
+
+      iterations++;
+    }
+
+    // Save alert if threat detected
+    if (agentFoundThreat) {
+      await Alert.create({
+        sectorId: "SECTOR-7-KAKAMEGA", // Could be enhanced to detect from response
+        threatType: "Logging", // Could be enhanced to detect from response
+        confidence: 0.94, // Could be enhanced to extract from response
+        dispatchMessage: response.output_text,
+      });
+      console.log("[WATCHTOWER] Alert saved to database!");
+    }
+  } catch (err) {
+    console.error("Watchtower failed:", err);
+  }
+});
 
 // API endpoint for threat analysis with Server-Sent Events
 app.post("/api/analyze", async (req, res) => {
@@ -161,18 +257,78 @@ app.post("/api/analyze", async (req, res) => {
     }
   } catch (error) {
     console.error("Error during execution:", error);
-    sendUpdate(
-      "error",
-      `System failure: ${error.message || "Unknown error"}`,
-    );
+    sendUpdate("error", `System failure: ${error.message || "Unknown error"}`);
   } finally {
     res.end();
   }
 });
 
+// USSD endpoint for Africa's Talking community reports
+app.post("/api/ussd", async (req, res) => {
+  const { sessionId, serviceCode, phoneNumber, text } = req.body;
+
+  console.log(
+    `[USSD] Received: sessionId=${sessionId}, phoneNumber=${phoneNumber}, text="${text}"`,
+  );
+
+  let response = "";
+
+  if (text === "") {
+    response = `CON Welcome to Sauti Porini Community Watch.\n1. Illegal Logging (Chainsaw)\n2. Forest Fire\n3. Poaching Activity`;
+  } else if (text === "1") {
+    response = `CON Please enter the Sector number (e.g., 7):`;
+  } else if (text.startsWith("1*")) {
+    const sectorNumber = text.split("*")[1];
+    const targetSector = `SECTOR-${sectorNumber}-KAKAMEGA`;
+
+    response = `END Thank you. Alert sent for ${targetSector}. Sauti Porini is investigating.`;
+
+    console.log(
+      `\n [USSD INTEL] Community report received for ${targetSector}! Triggering agent...`,
+    );
+
+    try {
+      const conversation = await openAIClient.conversations.create({
+        items: [
+          {
+            type: "message",
+            role: "user",
+            content: `A local community member just reported illegal logging via USSD in ${targetSector}. Please investigate using your satellite tools and draft a dispatch.`,
+          },
+        ],
+      });
+
+      await openAIClient.responses.create(
+        { conversation: conversation.id },
+        { body: { agent: { name: agent.name, type: "agent_reference" } } },
+      );
+    } catch (error) {
+      console.error("Failed to trigger agent from USSD:", error);
+    }
+  } else {
+    response = `END Invalid input. Please try again.`;
+  }
+
+  console.log(`[USSD] Sending response: "${response}"`);
+  res.set("Content-Type", "text/plain");
+  res.send(response);
+});
+
 // Health check endpoint
 app.get("/health", (req, res) => {
   res.json({ status: "ok", agent: agent?.name || "not initialized" });
+});
+
+//connect to the frontend
+app.get('/api/alerts', async (req, res) => {
+  try {
+    // Fetch the 10 most recent alerts from Cosmos DB, newest first
+    const alerts = await Alert.find().sort({ timestamp: -1 }).limit(10);
+    res.json(alerts);
+  } catch (error) {
+    console.error("Failed to fetch alerts:", error);
+    res.status(500).json({ error: "Failed to fetch database records" });
+  }
 });
 
 // Start server
