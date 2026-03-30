@@ -24,6 +24,7 @@ const SECTOR_MAP = {
 const app = express();
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 
 const PORT = process.env.PORT || 3000;
 
@@ -166,9 +167,10 @@ cron.schedule("*/5 * * * *", async () => {
 
     // Save alert if threat detected
     if (agentFoundThreat) {
+      const sectorId = "SECTOR-7-KAKAMEGA";
       const coords = SECTOR_MAP[sectorId] || SECTOR_MAP["DEFAULT"];
       await Alert.create({
-        sectorId: "SECTOR-7-KAKAMEGA",
+        sectorId: sectorId,
         threatType: "Logging",
         confidence: 0.94,
         dispatchMessage: response.output_text,
@@ -281,6 +283,15 @@ app.post("/api/analyze", async (req, res) => {
 
 // USSD endpoint for Africa's Talking community reports
 app.post("/api/ussd", async (req, res) => {
+  console.log("USSD HIT", req.body);
+
+  if (!req.body || Object.keys(req.body).length === 0) {
+    console.warn(
+      "USSD request body is empty. Check the callback content-type and payload format.",
+    );
+    return res.status(400).send("Bad Request: Missing USSD payload");
+  }
+
   const { sessionId, serviceCode, phoneNumber, text } = req.body;
 
   console.log(
