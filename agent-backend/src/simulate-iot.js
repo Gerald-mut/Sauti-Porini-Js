@@ -1,37 +1,22 @@
 async function simulateChainsaw() {
-  console.log("Booting up....listening.....");
+  console.log("Booting up acoustic sensor in SECTOR-7...");
+  
   setTimeout(async () => {
     console.log("DEVICE: Anomaly detected: Chainsaw Motor!");
     console.log("Confidence: 96%");
-    console.log("DEVICE: Transmitting alert to Sauti Porini Agent...\n");
+    console.log("DEVICE: Transmitting alert to Sauti Porini State Machine...\n");
 
     try {
-      //send the alert to the express api
-      const response = await fetch("http://localhost:3000/api/analyze", {
+      // Send the alert to the NEW IoT endpoint
+      const response = await fetch("http://localhost:3000/api/iot", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sectorId: "SECTOR-7-KAKAMEGA" }),
+        body: JSON.stringify({ sectorId: "SECTOR-7-KAKAMEGA", soundType: "CHAINSAW" }),
       });
-      //reads the stream of incoming data from the api in small chunks
-      const reader = response.body.getReader();
-      //utf-8 converts the raw bytes to text
-      const decoder = new TextDecoder("utf-8");
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        const chunk = decoder.decode(value);
-        const lines = chunk.split("\n");
-
-        for (let line of lines) {
-          if (line.startsWith("data: ")) {
-            const data = JSON.parse(line.replace("data: ", ""));
-            //print the live AI reasoning back to the terminal
-            console.log(`[CLOUD] ${data.message}`);
-          }
-        }
-      }
+      
+      const data = await response.json();
+      console.log(`[CLOUD RESPONSE] ${data.message}`);
+      
     } catch (error) {
       console.error(
         "Failed to reach the cloud server. Is orchestrator.js running?",

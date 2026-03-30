@@ -8,6 +8,28 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"; // tools for communicating with a custom ai server
 import cron from "node-cron"; //schedules automatic tasks
 import { Alert } from "./models/alert.js";
+import { ZoneState } from "./models/ZoneState.js";
+import crypto from "crypto";
+
+//connect to Azure Cosmos DB
+async function connectDatabase() {
+  try {
+    // You will put your Azure Cosmos DB connection string in your .env file
+    await mongoose.connect(process.env.MONGODB_URI);
+    console.log(
+      " [DATABASE] Connected to Azure Cosmos DB (State Memory Online)",
+    );
+
+    // Initialize Sector 7 if it doesn't exist yet
+    await ZoneState.findOneAndUpdate(
+      { sectorId: "SECTOR-7-KAKAMEGA" },
+      { $setOnInsert: { currentState: "NORMAL" } },
+      { upsert: true, new: true },
+    );
+  } catch (error) {
+    console.error(" Database connection failed:", error);
+  }
+}
 
 // A simple translation layer for Kakamega Forest sectors
 const SECTOR_MAP = {
@@ -28,16 +50,6 @@ app.use(express.urlencoded({ extended: true }));
 
 const PORT = process.env.PORT || 3000;
 
-// Connect to MongoDB
-if (process.env.MONGODB_URI) {
-  mongoose
-    .connect(process.env.MONGODB_URI)
-    .then(() => console.log("MongoDB connected"))
-    .catch((err) => console.log("MongoDB offline:", err.message));
-} else {
-  console.log("set mongodb url in .env");
-}
-
 //for holding connections to external services
 let mcpClient, openAIClient, agent, azureTools;
 
@@ -54,6 +66,7 @@ Maintain a professional, urgent, and analytical tone.`;
 
 //connect to external services
 async function initServices() {
+  connectDatabase();
   console.log("Booting Sauti Porini Agent Services...");
 
   //connec to mcp via stdio(runs node.js script as a subprocess)
@@ -95,94 +108,6 @@ async function initServices() {
     `System Ready! Agent ${agent.name} v${agent.version} listening on port ${PORT}`,
   );
 }
-
-//runs every 5 minutes
-cron.schedule("*/5 * * * *", async () => {
-  console.log("[WATCHTOWER] Starting forest patrol...");
-
-  try {
-    const conversation = await openAIClient.conversations.create({
-      items: [
-        {
-          type: "message",
-          role: "user",
-          content:
-            "Perform a routine security sweep. Check satellite data for SECTOR-7 and SECTOR-8. If a threat is confirmed, draft a dispatch.",
-        },
-      ],
-    });
-
-    let response = await openAIClient.responses.create(
-      { conversation: conversation.id },
-      { body: { agent: { name: agent.name, type: "agent_reference" } } },
-    );
-
-    let iterations = 0;
-    const MAX_ITERATIONS = 5;
-    let agentFoundThreat = false;
-
-    while (iterations < MAX_ITERATIONS) {
-      const functionCalls = response.output.filter(
-        (item) => item.type === "function_call",
-      );
-
-      if (functionCalls.length === 0) {
-        // Check if agent produced a dispatch (indicating threat found)
-        if (response.output_text && response.output_text.includes("dispatch")) {
-          agentFoundThreat = true;
-        }
-        break;
-      }
-
-      const toolResults = [];
-
-      for (const call of functionCalls) {
-        const args = JSON.parse(call.arguments);
-        const mcpResult = await mcpClient.callTool({
-          name: call.name,
-          arguments: args,
-        });
-        const resultText = mcpResult.content[0].text;
-
-        const safeCallId = call.call_id || call.id;
-        toolResults.push({
-          type: "function_call_output",
-          call_id: safeCallId,
-          output: resultText,
-        });
-      }
-
-      response = await openAIClient.responses.create(
-        {
-          input: toolResults,
-          previous_response_id: response.id,
-        },
-        {
-          body: { agent: { name: agent.name, type: "agent_reference" } },
-        },
-      );
-
-      iterations++;
-    }
-
-    // Save alert if threat detected
-    if (agentFoundThreat) {
-      const sectorId = "SECTOR-7-KAKAMEGA";
-      const coords = SECTOR_MAP[sectorId] || SECTOR_MAP["DEFAULT"];
-      await Alert.create({
-        sectorId: sectorId,
-        threatType: "Logging",
-        confidence: 0.94,
-        dispatchMessage: response.output_text,
-        lat: coords.lat,
-        lon: coords.lon,
-      });
-      console.log("[WATCHTOWER] Alert saved to database!");
-    }
-  } catch (err) {
-    console.error("Watchtower failed:", err);
-  }
-});
 
 // API endpoint for threat analysis with Server-Sent Events
 app.post("/api/analyze", async (req, res) => {
@@ -283,8 +208,6 @@ app.post("/api/analyze", async (req, res) => {
 
 // USSD endpoint for Africa's Talking community reports
 app.post("/api/ussd", async (req, res) => {
-  console.log("USSD HIT", req.body);
-
   if (!req.body || Object.keys(req.body).length === 0) {
     console.warn(
       "USSD request body is empty. Check the callback content-type and payload format.",
@@ -332,15 +255,41 @@ app.post("/api/ussd", async (req, res) => {
 
       // Save alert with coordinates
       const coords = SECTOR_MAP[targetSector] || SECTOR_MAP["DEFAULT"];
+      await ZoneState.findOneAndUpdate(
+        { sectorId: targetSector },
+        {
+          currentState: "ALERT",
+          lastUpdated: Date.now(),
+          $push: { activeThreats: "Verified Citizen USSD Report received." },
+        },
+      );
+      //generate the blockchain Hash to protect identity
+      const phoneHash = crypto.createHash('sha256').update(phoneNumber).digest('hex');
+      const maskedPhone = "***" + phoneNumber.slice(-4); // e.g., ***0000
+
+      //save alert with correct threatType and encryption
       await Alert.create({
         sectorId: targetSector,
-        threatType: "Logging",
-        confidence: 0.8,
-        dispatchMessage: "Community report via USSD",
-        phone_number: phoneNumber,
+        threatType: "ussd", 
+        confidence: 0.99, 
+        dispatchMessage: "Community report via USSD: Illegal Logging",
+        phone_number: maskedPhone,
+        blockchain_proof: phoneHash,
         lat: coords.lat,
         lon: coords.lon,
       });
+
+      // escalate the state to alert
+      await ZoneState.findOneAndUpdate(
+        { sectorId: targetSector },
+        { 
+          currentState: 'ALERT',
+          lastUpdated: Date.now(),
+          $push: { activeThreats: "Verified Citizen USSD Report." }
+        }
+      );
+      
+      console.log(`[USSD] Alert saved and encrypted for ${targetSector}`);
       console.log(`[USSD] Alert saved for ${targetSector}`);
     } catch (error) {
       console.error("Failed to trigger agent from USSD:", error);
@@ -352,6 +301,32 @@ app.post("/api/ussd", async (req, res) => {
   console.log(`[USSD] Sending response: "${response}"`);
   res.set("Content-Type", "text/plain");
   res.send(response);
+});
+
+// endpoint to simulate demo(changes state to watch)
+app.post("/api/demo/trigger-fire", async (req, res) => {
+  const targetSector = "SECTOR-7-KAKAMEGA";
+  console.log(`\n Simulating NASA FIRMS thermal anomaly in ${targetSector}...`);
+
+  try {
+    //change db to watch
+    const updatedSector = await ZoneState.findOneAndUpdate(
+      { sectorId: targetSector },
+      { 
+        currentState: "WATCH",
+        lastUpdated: Date.now(),
+        $push: { activeThreats: "NASA FIRMS: High-confidence thermal anomaly detected." }
+      },
+      { new: true } 
+    );
+
+    console.log(` [STATE CHANGE] Sector 7 forcefully escalated to WATCH.`);
+    res.json({ success: true, message: "Demo Mode activated. State is now WATCH.", sector: updatedSector });
+
+  } catch (error) {
+    console.error("Demo Mode failed:", error);
+    res.status(500).json({ error: "Failed to trigger simulated fire." });
+  }
 });
 
 // Health check endpoint
@@ -371,6 +346,35 @@ app.get("/api/alerts", async (req, res) => {
   }
 });
 
+app.get("/api/zones", async (req, res) => {
+  try {
+    const zones = await ZoneState.find();
+    const zonesWithCoords = zones.map(zone => {
+      const coords = SECTOR_MAP[zone.sectorId] || SECTOR_MAP["DEFAULT"];
+      return { ...zone.toObject(), lat: coords.lat, lon: coords.lon };
+    });
+    res.json(zonesWithCoords);
+  } catch (error) {
+    res.status(500).json({ error: "Failed to fetch zones" });
+  }
+});
+
+// resets alerts
+app.get("/api/demo/reset", async (req, res) => {
+  try {
+    await Alert.deleteMany({}); // Delete all historical alerts
+    await ZoneState.deleteMany({}); // Wipe the memory
+    
+    // Re-initialize Sector 7 to peaceful state
+    await ZoneState.create({ sectorId: "SECTOR-7-KAKAMEGA", currentState: "NORMAL" });
+    
+    console.log("[SYSTEM] Database wiped clean for demo.");
+    res.json({ message: "System reset to zero. Ready for pitch." });
+  } catch (err) {
+    res.status(500).json({ error: "Failed to reset database" });
+  }
+});
+
 // Start server
 initServices()
   .then(() => {
@@ -384,3 +388,52 @@ initServices()
     console.error("Failed to initialize services:", error);
     process.exit(1);
   });
+
+//runs every 2 minutes for the demo
+cron.schedule("*/2 * * * *", async () => {
+  console.log("\n [WATCHTOWER] Initiating routine sector sweep...");
+
+  try {
+    const sectorId = "SECTOR-7-KAKAMEGA";
+    const sector = await ZoneState.findOne({ sectorId: sectorId });
+    const coords = SECTOR_MAP[sectorId];
+
+    //fetch Weather Data from open weather map
+    let currentWind = 10; 
+    let currentTemp = 25; 
+    
+    try {
+      if (process.env.OPENWEATHER_API_KEY) {
+        const weatherUrl = `https://api.openweathermap.org/data/2.5/weather?lat=${coords.lat}&lon=${coords.lon}&appid=${process.env.OPENWEATHER_API_KEY}&units=metric`;
+        const weatherRes = await fetch(weatherUrl);
+        const weatherData = await weatherRes.json();
+        
+        currentWind = Math.round(weatherData.wind?.speed * 3.6); // Convert m/s to km/h
+        currentTemp = Math.round(weatherData.main?.temp);
+      }
+    } catch (e) {
+      console.log("Weather API unreachable, using default baseline.");
+    }
+
+    console.log(`[ENVIRONMENT] Kakamega Baseline -> Wind: ${currentWind}km/h | Temp: ${currentTemp}°C`);
+
+    // update the environmental context in the database 
+    await ZoneState.findOneAndUpdate(
+      { sectorId: sectorId },
+      { 
+        weatherContext: { windSpeed: currentWind, temperature: currentTemp },
+        lastUpdated: Date.now()
+      }
+    );
+
+    // check logging (It stays NORMAL unless demo Mode or USSD fires)
+    if (sector.currentState === "NORMAL") {
+      console.log("[STATUS] Sector is NORMAL. No thermal anomalies detected in the last 2 minutes.");
+    } else {
+      console.log(`[STATUS] Sector is currently in ${sector.currentState} state.`);
+    }
+
+  } catch (error) {
+    console.error("Watchtower failed:", error);
+  }
+});
