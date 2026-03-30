@@ -4,13 +4,10 @@ import { TreeDeciduous, Activity, Users, Wifi, Menu } from "lucide-react";
 import GlassModal from "./components/GlassModal";
 import Sidebar from "./components/Sidebar";
 import LiveTerminal from "./components/LiveTerminal";
-
-// Import the 3 separate functions
-import { fetchAllAlerts } from "./services/api";
+import { fetchAllAlerts, fetchZoneStates } from "./services/api";
 
 function App() {
-  // We keep the state unified for easier passing to the Map,
-  // but we populate it from separate sources.
+  const [zones, setZones] = useState([]);
   const [data, setData] = useState({
     satellite_alerts: [],
     ussd_reports: [],
@@ -24,29 +21,29 @@ function App() {
   useEffect(() => {
     const loadData = async () => {
       try {
-        const allAlerts = await fetchAllAlerts();
+        const [allAlerts, allZones] = await Promise.all([
+          fetchAllAlerts(),
+          fetchZoneStates(),
+        ]);
 
-        // Client-side filtering: fast and efficient
+        setZones(allZones); // Feed this to the map!
+
+        // Keep your existing client-side filtering for the Data Tables
         setData({
-          satellite_alerts: allAlerts.filter((a) => {
-            const type = String(a.threatType || "").toLowerCase();
-            return [
-              "satellite",
-              "logging",
-              "fire",
-              "poaching",
-              "deforestation",
-            ].includes(type);
-          }),
+          satellite_alerts: allAlerts.filter((a) =>
+            ["satellite", "logging", "fire"].includes(
+              String(a.threatType).toLowerCase(),
+            ),
+          ),
           ussd_reports: allAlerts.filter(
-            (a) => String(a.threatType || "").toLowerCase() === "ussd",
+            (a) => String(a.threatType).toLowerCase() === "ussd",
           ),
           iot_events: allAlerts.filter(
-            (a) => String(a.threatType || "").toLowerCase() === "iot",
+            (a) => String(a.threatType).toLowerCase() === "iot",
           ),
         });
       } catch (error) {
-        console.error("Error loading data streams:", error);
+        console.error("Error loading data:", error);
       }
     };
 
@@ -58,7 +55,7 @@ function App() {
   const getModalTitle = () => {
     switch (selectedCategory) {
       case "satellite":
-        return "Deforestation Alerts (GFW)";
+        return "Satellite and Threat History";
       case "iot":
         return "Acoustic Sensor Events";
       case "ussd":
@@ -71,11 +68,7 @@ function App() {
   return (
     <div className="relative w-full h-screen bg-black overflow-hidden font-sans">
       {/* ForestMap handles the Visuals */}
-      <ForestMap
-        satelliteData={data.satellite_alerts}
-        ussdData={data.ussd_reports}
-        iotData={data.iot_events}
-      />
+      <ForestMap zoneData={zones} />
 
       {/* Sidebar Navigation */}
       <Sidebar
