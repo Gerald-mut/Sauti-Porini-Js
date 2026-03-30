@@ -28,11 +28,22 @@ function App() {
 
         // Client-side filtering: fast and efficient
         setData({
-          satellite_alerts: allAlerts.filter(
-            (a) => a.threatType === "satellite",
+          satellite_alerts: allAlerts.filter((a) => {
+            const type = String(a.threatType || "").toLowerCase();
+            return [
+              "satellite",
+              "logging",
+              "fire",
+              "poaching",
+              "deforestation",
+            ].includes(type);
+          }),
+          ussd_reports: allAlerts.filter(
+            (a) => String(a.threatType || "").toLowerCase() === "ussd",
           ),
-          ussd_reports: allAlerts.filter((a) => a.threatType === "ussd"),
-          iot_events: allAlerts.filter((a) => a.threatType === "iot"),
+          iot_events: allAlerts.filter(
+            (a) => String(a.threatType || "").toLowerCase() === "iot",
+          ),
         });
       } catch (error) {
         console.error("Error loading data streams:", error);
@@ -145,14 +156,20 @@ function App() {
                     className="border-b border-white/5 hover:bg-white/5 transition-colors"
                   >
                     <td className="p-3 font-mono text-gray-400">
-                      {alert.alert_date || "N/A"}
+                      {alert.alert_date
+                        ? new Date(alert.alert_date).toLocaleString()
+                        : alert.timestamp
+                          ? new Date(alert.timestamp).toLocaleString()
+                          : "N/A"}
                     </td>
                     <td className="p-3 font-mono">
                       {alert.lat}, {alert.lon}
                     </td>
                     <td className="p-3">
                       <span className="bg-red-500/20 text-red-400 px-2 py-1 rounded text-xs font-bold uppercase">
-                        {alert.confidence_level}
+                        {alert.confidence_level ??
+                          alert.confidence ??
+                          "Unknown"}
                       </span>
                     </td>
                   </tr>
