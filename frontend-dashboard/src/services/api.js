@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-//points frontend to the backend server
+//points frontend tothe backend server
 const API_BASE_URL = 'http://localhost:3000/api'; 
 
 export const fetchAllAlerts = async () => {

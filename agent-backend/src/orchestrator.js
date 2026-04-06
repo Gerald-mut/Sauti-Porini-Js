@@ -11,7 +11,7 @@ import { Alert } from "./models/alert.js";
 import { ZoneState } from "./models/ZoneState.js";
 import crypto from "crypto";
 
-//connect to Azure Cosmos DB
+//connect to Azure CosmosDB
 async function connectDatabase() {
   try {
     // You will put your Azure Cosmos DB connection string in your .env file
