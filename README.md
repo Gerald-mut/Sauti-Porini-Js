@@ -40,7 +40,7 @@ To solve the classic AI problems of "alert fatigue" and excessive API token burn
 ## Getting Started
 
 ### Prerequisites
-* Node.js (v18 or higher)
+* Node.js 
 * Azure Cosmos DB (or a local MongoDB instance)
 * Azure AI Foundry account
 * Mapbox API Token
