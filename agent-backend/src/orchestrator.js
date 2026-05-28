@@ -10,6 +10,36 @@ import cron from "node-cron"; //schedules automatic tasks
 import { Alert } from "./models/alert.js";
 import { ZoneState } from "./models/ZoneState.js";
 import crypto from "crypto";
+import rateLimit from "express-rate-limit";
+
+// --- CHANGE 1: Env-var validation on startup ---
+const REQUIRED_ENV_VARS = [
+  "PORT",
+  "MONGODB_URI",
+  "AZURE_AI_PROJECT_ENDPOINT",
+  "AZURE_OPENAI_DEPLOYMENT",
+  "OPENWEATHER_API_KEY"
+];
+
+const missingEnvVars = REQUIRED_ENV_VARS.filter(
+  (varName) => !process.env[varName] || process.env[varName].trim() === ""
+);
+
+if (missingEnvVars.length > 0) {
+  console.error("❌ Missing required environment variables:\n" + missingEnvVars.map(v => `   - ${v}`).join("\n"));
+  process.exit(1);
+} else {
+  console.log("✓ All required environment variables present");
+}
+
+// Rate limiter for USSD route
+const ussdLimiter = rateLimit({
+  windowMs: 60 * 1000, // 60 seconds
+  max: 10, // 10 requests per window
+  message: { error: "Too many requests. Please wait before submitting again." },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 console.log('MONGO URI loaded:', !!process.env.MONGODB_URI);
 console.log('AZURE ENDPOINT loaded:', !!process.env.AZURE_AI_PROJECT_ENDPOINT);
@@ -59,10 +89,25 @@ const SYSTEM_PROMPT = `You are Sauti Porini, an autonomous environmental protect
 Your primary directive is to analyze incoming environmental data (acoustic sensors, satellite imagery, weather conditions) to detect and verify illegal logging, poaching, or forest fires.
 
 When you receive a threat alert:
-1. Analyze the raw data for severity and confidence.
-2. Cross-reference the location with local weather and terrain data using your available tools.
-3. If the threat is verified, draft a localized, concise dispatch alert for human rangers.
-4. Do NOT take irreversible actions without human-in-the-loop verification.
+1. Always call get_zone_history first to understand the threat timeline.
+2. Always call get_live_weather to get current conditions.
+3. Call calculate_fire_spread if wind speed is above 20 km/h.
+4. Only draft the final tactical dispatch after reviewing tool results.
+5. Do NOT take irreversible actions without human-in-the-loop verification.
+
+Your final response MUST be a valid JSON object with exactly these fields:
+{
+  "confidence": <integer 0-100 representing your certainty this is a genuine threat, based on data consistency across your tool results>,
+  "reasoning": [
+    "<step 1: what get_zone_history revealed>",
+    "<step 2: what get_live_weather showed>",
+    "<step 3: what calculate_fire_spread determined (if called)>",
+    "<step 4: why you assessed this confidence level>"
+  ],
+  "threat_label": "<one of: ILLEGAL_LOGGING, WILDFIRE, VEHICLE_INCURSION, UNKNOWN>",
+  "dispatch": "<the full tactical ranger dispatch text>"
+}
+Do not wrap it in markdown code fences. Return raw JSON only.
 
 Maintain a professional, urgent, and analytical tone.`;
 
@@ -85,12 +130,50 @@ async function initServices() {
 
   // Get MCP tools
   const mcpToolsResponse = await mcpClient.listTools();
+  const localToolsDef = [
+    {
+      type: "function",
+      name: "get_zone_history",
+      description: "Retrieve the last 10 threat events for a given zone from the database, including timestamps, states, and triggering conditions",
+      parameters: {
+        type: "object",
+        properties: { zone_id: { type: "string" } },
+        required: ["zone_id"]
+      }
+    },
+    {
+      type: "function",
+      name: "get_live_weather",
+      description: "Get current wind speed, wind direction, humidity, and temperature for a geographic coordinate",
+      parameters: {
+        type: "object",
+        properties: { lat: { type: "number" }, lon: { type: "number" } },
+        required: ["lat", "lon"]
+      }
+    },
+    {
+      type: "function",
+      name: "calculate_fire_spread",
+      description: "Given wind speed and direction, estimate the primary fire spread vector and affected radius in km over 30 minutes",
+      parameters: {
+        type: "object",
+        properties: {
+          wind_speed_kmh: { type: "number" },
+          wind_direction_degrees: { type: "number" },
+          ignition_lat: { type: "number" },
+          ignition_lon: { type: "number" }
+        },
+        required: ["wind_speed_kmh", "wind_direction_degrees", "ignition_lat", "ignition_lon"]
+      }
+    }
+  ];
+
   azureTools = mcpToolsResponse.tools.map((tool) => ({
     type: "function",
     name: tool.name,
     description: tool.description,
     parameters: tool.inputSchema,
-  }));
+  })).concat(localToolsDef);
 
   // Connect Azure Foundry
   const project = new AIProjectClient(
@@ -110,6 +193,55 @@ async function initServices() {
   console.log(
     `System Ready! Agent ${agent.name} v${agent.version} listening on port ${PORT}`,
   );
+}
+
+async function executeLocalTool(call) {
+  try {
+    const args = JSON.parse(call.arguments || "{}");
+    if (call.name === "get_zone_history") {
+      const history = await Alert.find({ sectorId: args.zone_id }).sort({ timestamp: -1 }).limit(10);
+      return JSON.stringify(history);
+    } else if (call.name === "get_live_weather") {
+      const weatherUrl = `https://api.openweathermap.org/data/2.5/weather?lat=${args.lat}&lon=${args.lon}&appid=${process.env.OPENWEATHER_API_KEY}&units=metric`;
+      const res = await fetch(weatherUrl);
+      const data = await res.json();
+      return JSON.stringify({
+        wind_speed_kmh: Math.round((data.wind?.speed || 0) * 3.6),
+        wind_direction_degrees: data.wind?.deg || 0,
+        humidity_percent: data.main?.humidity || 0,
+        temp_celsius: Math.round(data.main?.temp || 0)
+      });
+    } else if (call.name === "calculate_fire_spread") {
+      const { wind_speed_kmh, wind_direction_degrees, ignition_lat, ignition_lon } = args;
+      const spread_radius_km = wind_speed_kmh * 0.5 * (30/60);
+      return JSON.stringify({
+        spread_radius_km,
+        primary_bearing_degrees: wind_direction_degrees,
+        estimated_affected_area_km2: Math.PI * Math.pow(spread_radius_km, 2)
+      });
+    }
+    
+    // Fallback to MCP tools
+    const mcpResult = await mcpClient.callTool({ name: call.name, arguments: args });
+    return mcpResult.content[0].text;
+  } catch (err) {
+    return JSON.stringify({ error: `${call.name} failed: ${err.message}` });
+  }
+}
+
+function parseAgentResponse(rawText) {
+  try {
+    const cleanedText = rawText.trim().replace(/^```json/, "").replace(/```$/, "").trim();
+    return JSON.parse(cleanedText);
+  } catch (err) {
+    console.warn("[AGENT WARNING] Unstructured response — using fallback wrapper");
+    return {
+      confidence: 50,
+      reasoning: ['Agent returned unstructured response'],
+      threat_label: 'UNKNOWN',
+      dispatch: rawText
+    };
+  }
 }
 
 // API endpoint for threat analysis with Server-Sent Events
@@ -158,7 +290,8 @@ app.post("/api/analyze", async (req, res) => {
       );
 
       if (functionCalls.length === 0) {
-        sendUpdate("complete", response.output_text);
+        const finalData = parseAgentResponse(response.output_text);
+        sendUpdate("complete", finalData);
         break;
       }
 
@@ -171,12 +304,7 @@ app.post("/api/analyze", async (req, res) => {
       for (const call of functionCalls) {
         sendUpdate("tool_execution", `Executing: ${call.name}`);
 
-        const args = JSON.parse(call.arguments);
-        const mcpResult = await mcpClient.callTool({
-          name: call.name,
-          arguments: args,
-        });
-        const resultText = mcpResult.content[0].text;
+        const resultText = await executeLocalTool(call);
 
         sendUpdate("tool_result", `Result: ${resultText.substring(0, 200)}`);
 
@@ -210,7 +338,7 @@ app.post("/api/analyze", async (req, res) => {
 });
 
 // USSD endpoint for Africa's Talking community reports
-app.post("/api/ussd", async (req, res) => {
+app.post("/api/ussd", ussdLimiter, async (req, res) => {
   if (!req.body || Object.keys(req.body).length === 0) {
     console.warn(
       "USSD request body is empty. Check the callback content-type and payload format.",
@@ -251,10 +379,48 @@ app.post("/api/ussd", async (req, res) => {
         ],
       });
 
-      await openAIClient.responses.create(
+      let response = await openAIClient.responses.create(
         { conversation: conversation.id },
         { body: { agent: { name: agent.name, type: "agent_reference" } } },
       );
+
+      let iterations = 0;
+      const MAX_ITERATIONS = 5;
+      let finalDispatchData = {
+        confidence: 50,
+        reasoning: [],
+        threat_label: 'UNKNOWN',
+        dispatch: "Community report via USSD: Illegal Logging"
+      };
+
+      while (iterations < MAX_ITERATIONS) {
+        const functionCalls = response.output.filter((item) => item.type === "function_call");
+        
+        if (functionCalls.length === 0) {
+          finalDispatchData = parseAgentResponse(response.output_text);
+          break;
+        }
+
+        const toolResults = [];
+        for (const call of functionCalls) {
+          console.log(`[AGENT TOOL] Executing: ${call.name}`);
+          const resultText = await executeLocalTool(call);
+          console.log(`[AGENT TOOL] Result: ${resultText.substring(0, 150)}...`);
+
+          toolResults.push({
+            type: "function_call_output",
+            call_id: call.call_id || call.id,
+            output: resultText,
+          });
+        }
+
+        response = await openAIClient.responses.create(
+          { input: toolResults, previous_response_id: response.id },
+          { body: { agent: { name: agent.name, type: "agent_reference" } } }
+        );
+
+        iterations++;
+      }
 
       // Save alert with coordinates
       const coords = SECTOR_MAP[targetSector] || SECTOR_MAP["DEFAULT"];
@@ -273,9 +439,12 @@ app.post("/api/ussd", async (req, res) => {
       //save alert with correct threatType and encryption
       await Alert.create({
         sectorId: targetSector,
-        threatType: "ussd",
-        confidence: 0.99,
-        dispatchMessage: "Community report via USSD: Illegal Logging",
+        threatType: finalDispatchData.threat_label || "ussd",
+        threat_label: finalDispatchData.threat_label,
+        confidence: finalDispatchData.confidence.toString(),
+        dispatchMessage: finalDispatchData.dispatch,
+        dispatch: finalDispatchData.dispatch,
+        reasoning: finalDispatchData.reasoning,
         phone_number: maskedPhone,
         blockchain_proof: phoneHash,
         lat: coords.lat,
@@ -333,8 +502,33 @@ app.post("/api/demo/trigger-fire", async (req, res) => {
 });
 
 // Health check endpoint
-app.get("/health", (req, res) => {
-  res.json({ status: "ok", agent: agent?.name || "not initialized" });
+app.get("/health", async (req, res) => {
+  try {
+    const [total, normal, watch, critical] = await Promise.all([
+      ZoneState.countDocuments(),
+      ZoneState.countDocuments({ currentState: "NORMAL" }),
+      ZoneState.countDocuments({ currentState: "WATCH" }),
+      ZoneState.countDocuments({ currentState: { $in: ["CRITICAL", "ALERT"] } })
+    ]);
+
+    res.status(200).json({
+      status: "ok",
+      timestamp: new Date().toISOString(),
+      zones: {
+        total,
+        normal,
+        watch,
+        critical
+      },
+      uptime_seconds: Math.round(process.uptime())
+    });
+  } catch (error) {
+    res.status(503).json({
+      status: "degraded",
+      error: error.message || "Database query failed",
+      timestamp: new Date().toISOString()
+    });
+  }
 });
 
 //connect to the frontend
@@ -350,15 +544,31 @@ app.get("/api/alerts", async (req, res) => {
 });
 
 app.get("/api/zones", async (req, res) => {
+  res.setHeader("Cache-Control", "no-store");
   try {
-    const zones = await ZoneState.find();
+    let filter = {};
+    if (req.query.state) {
+      const queryState = req.query.state.toUpperCase();
+      if (queryState === "CRITICAL") {
+        filter.currentState = { $in: ["CRITICAL", "ALERT"] };
+      } else {
+        filter.currentState = queryState;
+      }
+    }
+
+    const zones = await ZoneState.find(filter);
     const zonesWithCoords = zones.map(zone => {
       const coords = SECTOR_MAP[zone.sectorId] || SECTOR_MAP["DEFAULT"];
       return { ...zone.toObject(), lat: coords.lat, lon: coords.lon };
     });
-    res.json(zonesWithCoords);
+
+    res.status(200).json({
+      zones: zonesWithCoords,
+      count: zonesWithCoords.length,
+      timestamp: new Date().toISOString()
+    });
   } catch (error) {
-    res.status(500).json({ error: "Failed to fetch zones" });
+    res.status(500).json({ error: error.message || "Failed to fetch zones" });
   }
 });
 
