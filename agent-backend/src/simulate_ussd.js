@@ -1,3 +1,5 @@
+import { classifyAudio } from "./acoustic-classifier.js";
+
 //allback if africas talking ussd isnt working
 async function runUSSDSimulation() {
   const url = 'http://localhost:3000/api/ussd';
@@ -31,10 +33,23 @@ async function runUSSDSimulation() {
     await new Promise(resolve => setTimeout(resolve, 1500));
 
     console.log("[USER] Entering Sector 7...");
+    
+    const audioInput = { 
+      type: 'mock', 
+      payload: 'chainsaw motor revving in dense forest area sector 4' 
+    };
+    const classification = await classifyAudio(audioInput);
+    
+    console.log(`[ACOUSTIC] Label: ${classification.threat_label} | Confidence: ${classification.confidence}% | Pipeline: ${classification.pipeline} | Keywords: ${classification.keywords_detected.join(", ")}`);
+    
+    if (classification.threat_label === 'UNKNOWN' && classification.confidence < 30) {
+      console.log("[ACOUSTIC WARNING] Low confidence classification but proceed anyway");
+    }
+
     res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ...basePayload, text: "1*7" }) // User replied '7' (cumulative text: '1*7')
+      body: JSON.stringify({ ...basePayload, text: "1*7", acoustic_classification: classification }) // User replied '7' (cumulative text: '1*7')
     });
     console.log("[AFRICA'S TALKING RESPONSE]:\n" + await res.text() + "\n");
 

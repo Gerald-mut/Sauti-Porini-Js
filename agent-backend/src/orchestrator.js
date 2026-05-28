@@ -32,6 +32,12 @@ if (missingEnvVars.length > 0) {
   console.log("✓ All required environment variables present");
 }
 
+const OPTIONAL_ENV_VARS = ["AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION"];
+const missingOptional = OPTIONAL_ENV_VARS.filter(v => !process.env[v] || process.env[v].trim() === "");
+if (missingOptional.length > 0) {
+  console.warn("⚠ Missing optional environment variables (Acoustic classification will use mock_fallback): " + missingOptional.join(", "));
+}
+
 // Rate limiter for USSD route
 const ussdLimiter = rateLimit({
   windowMs: 60 * 1000, // 60 seconds
@@ -346,7 +352,7 @@ app.post("/api/ussd", ussdLimiter, async (req, res) => {
     return res.status(400).send("Bad Request: Missing USSD payload");
   }
 
-  const { sessionId, serviceCode, phoneNumber, text } = req.body;
+  const { sessionId, serviceCode, phoneNumber, text, acoustic_classification } = req.body;
 
   console.log(
     `[USSD] Received: sessionId=${sessionId}, phoneNumber=${phoneNumber}, text="${text}"`,
@@ -369,12 +375,18 @@ app.post("/api/ussd", ussdLimiter, async (req, res) => {
     );
 
     try {
+      let promptContent = `A local community member just reported illegal logging via USSD in ${targetSector}. Please investigate using your satellite tools and draft a dispatch.`;
+      
+      if (acoustic_classification) {
+        promptContent += ` Acoustic sensor classification: ${acoustic_classification.threat_label} detected with ${acoustic_classification.confidence}% confidence. Keywords: ${acoustic_classification.keywords_detected.join(", ")}. Pipeline: ${acoustic_classification.pipeline}`;
+      }
+
       const conversation = await openAIClient.conversations.create({
         items: [
           {
             type: "message",
             role: "user",
-            content: `A local community member just reported illegal logging via USSD in ${targetSector}. Please investigate using your satellite tools and draft a dispatch.`,
+            content: promptContent,
           },
         ],
       });
