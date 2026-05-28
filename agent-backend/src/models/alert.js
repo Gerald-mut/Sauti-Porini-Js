@@ -13,6 +13,7 @@ const AlertSchema = new mongoose.Schema({
   dispatchMessage: String,
   dispatch: String,
   reasoning: [String],
+  locale: String,
   timestamp: { type: Date, default: Date.now }
 });
 

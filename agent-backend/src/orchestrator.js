@@ -101,6 +101,12 @@ When you receive a threat alert:
 4. Only draft the final tactical dispatch after reviewing tool results.
 5. Do NOT take irreversible actions without human-in-the-loop verification.
 
+The 'locale' field in your context determines output language.
+If locale is 'sw', provide the 'dispatch' field in Swahili.
+If locale is 'en', provide the 'dispatch' field in English.
+The 'reasoning' array must always be in English regardless of locale.
+The confidence integer and threat_label are language-agnostic.
+
 Your final response MUST be a valid JSON object with exactly these fields:
 {
   "confidence": <integer 0-100 representing your certainty this is a genuine threat, based on data consistency across your tool results>,
@@ -111,7 +117,8 @@ Your final response MUST be a valid JSON object with exactly these fields:
     "<step 4: why you assessed this confidence level>"
   ],
   "threat_label": "<one of: ILLEGAL_LOGGING, WILDFIRE, VEHICLE_INCURSION, UNKNOWN>",
-  "dispatch": "<the full tactical ranger dispatch text>"
+  "dispatch": "<the full tactical ranger dispatch text>",
+  "locale": "<'en' or 'sw' matching the requested language>"
 }
 Do not wrap it in markdown code fences. Return raw JSON only.
 
@@ -245,7 +252,8 @@ function parseAgentResponse(rawText) {
       confidence: 50,
       reasoning: ['Agent returned unstructured response'],
       threat_label: 'UNKNOWN',
-      dispatch: rawText
+      dispatch: rawText,
+      locale: 'en'
     };
   }
 }
@@ -358,14 +366,25 @@ app.post("/api/ussd", ussdLimiter, async (req, res) => {
     `[USSD] Received: sessionId=${sessionId}, phoneNumber=${phoneNumber}, text="${text}"`,
   );
 
+  let locale = "en";
+  let processedText = text;
+
+  if (text.startsWith("*sw*") || text === "*sw") {
+    locale = "sw";
+    processedText = text.replace(/^\*sw\*/, "").replace(/^\*sw$/, "");
+  } else if (text.startsWith("*en*") || text === "*en") {
+    locale = "en";
+    processedText = text.replace(/^\*en\*/, "").replace(/^\*en$/, "");
+  }
+
   let response = "";
 
-  if (text === "") {
+  if (processedText === "") {
     response = `CON Welcome to Sauti Porini Community Watch.\n1. Illegal Logging (Chainsaw)\n2. Forest Fire\n3. Poaching Activity`;
-  } else if (text === "1") {
+  } else if (processedText === "1") {
     response = `CON Please enter the Sector number (e.g., 7):`;
-  } else if (text.startsWith("1*")) {
-    const sectorNumber = text.split("*")[1];
+  } else if (processedText.startsWith("1*")) {
+    const sectorNumber = processedText.split("*")[1];
     const targetSector = `SECTOR-${sectorNumber}-KAKAMEGA`;
 
     response = `END Thank you. Alert sent for ${targetSector}. Sauti Porini is investigating.`;
@@ -375,7 +394,7 @@ app.post("/api/ussd", ussdLimiter, async (req, res) => {
     );
 
     try {
-      let promptContent = `A local community member just reported illegal logging via USSD in ${targetSector}. Please investigate using your satellite tools and draft a dispatch.`;
+      let promptContent = `A local community member just reported illegal logging via USSD in ${targetSector}. Please investigate using your satellite tools and draft a dispatch. Locale is '${locale}'.`;
       
       if (acoustic_classification) {
         promptContent += ` Acoustic sensor classification: ${acoustic_classification.threat_label} detected with ${acoustic_classification.confidence}% confidence. Keywords: ${acoustic_classification.keywords_detected.join(", ")}. Pipeline: ${acoustic_classification.pipeline}`;
@@ -457,6 +476,7 @@ app.post("/api/ussd", ussdLimiter, async (req, res) => {
         dispatchMessage: finalDispatchData.dispatch,
         dispatch: finalDispatchData.dispatch,
         reasoning: finalDispatchData.reasoning,
+        locale: finalDispatchData.locale,
         phone_number: maskedPhone,
         blockchain_proof: phoneHash,
         lat: coords.lat,
