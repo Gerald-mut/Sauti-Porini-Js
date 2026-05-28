@@ -11,6 +11,8 @@ import { Alert } from "./models/alert.js";
 import { ZoneState } from "./models/ZoneState.js";
 import crypto from "crypto";
 
+console.log('MONGO URI loaded:', !!process.env.MONGODB_URI);
+console.log('AZURE ENDPOINT loaded:', !!process.env.AZURE_AI_PROJECT_ENDPOINT);
 //connect to Azure CosmosDB
 async function connectDatabase() {
   try {
@@ -93,6 +95,7 @@ async function initServices() {
   // Connect Azure Foundry
   const project = new AIProjectClient(
     process.env.AZURE_AI_PROJECT_ENDPOINT,
+    // new AzureKeyCredential(process.env.AZURE_AI_API_KEY)
     new DefaultAzureCredential(),
   );
   openAIClient = await project.getOpenAIClient();
@@ -270,8 +273,8 @@ app.post("/api/ussd", async (req, res) => {
       //save alert with correct threatType and encryption
       await Alert.create({
         sectorId: targetSector,
-        threatType: "ussd", 
-        confidence: 0.99, 
+        threatType: "ussd",
+        confidence: 0.99,
         dispatchMessage: "Community report via USSD: Illegal Logging",
         phone_number: maskedPhone,
         blockchain_proof: phoneHash,
@@ -282,13 +285,13 @@ app.post("/api/ussd", async (req, res) => {
       // escalate the state to alert
       await ZoneState.findOneAndUpdate(
         { sectorId: targetSector },
-        { 
+        {
           currentState: 'ALERT',
           lastUpdated: Date.now(),
           $push: { activeThreats: "Verified Citizen USSD Report." }
         }
       );
-      
+
       console.log(`[USSD] Alert saved and encrypted for ${targetSector}`);
       console.log(`[USSD] Alert saved for ${targetSector}`);
     } catch (error) {
@@ -312,12 +315,12 @@ app.post("/api/demo/trigger-fire", async (req, res) => {
     //change db to watch
     const updatedSector = await ZoneState.findOneAndUpdate(
       { sectorId: targetSector },
-      { 
+      {
         currentState: "WATCH",
         lastUpdated: Date.now(),
         $push: { activeThreats: "NASA FIRMS: High-confidence thermal anomaly detected." }
       },
-      { new: true } 
+      { new: true }
     );
 
     console.log(` [STATE CHANGE] Sector 7 forcefully escalated to WATCH.`);
@@ -364,10 +367,10 @@ app.get("/api/demo/reset", async (req, res) => {
   try {
     await Alert.deleteMany({}); // Delete all historical alerts
     await ZoneState.deleteMany({}); // Wipe the memory
-    
+
     // Re-initialize Sector 7 to peaceful state
     await ZoneState.create({ sectorId: "SECTOR-7-KAKAMEGA", currentState: "NORMAL" });
-    
+
     console.log("[SYSTEM] Database wiped clean for demo.");
     res.json({ message: "System reset to zero. Ready for pitch." });
   } catch (err) {
@@ -399,15 +402,15 @@ cron.schedule("*/2 * * * *", async () => {
     const coords = SECTOR_MAP[sectorId];
 
     //fetch Weather Data from open weather map
-    let currentWind = 10; 
-    let currentTemp = 25; 
-    
+    let currentWind = 10;
+    let currentTemp = 25;
+
     try {
       if (process.env.OPENWEATHER_API_KEY) {
         const weatherUrl = `https://api.openweathermap.org/data/2.5/weather?lat=${coords.lat}&lon=${coords.lon}&appid=${process.env.OPENWEATHER_API_KEY}&units=metric`;
         const weatherRes = await fetch(weatherUrl);
         const weatherData = await weatherRes.json();
-        
+
         currentWind = Math.round(weatherData.wind?.speed * 3.6); // Convert m/s to km/h
         currentTemp = Math.round(weatherData.main?.temp);
       }
@@ -420,7 +423,7 @@ cron.schedule("*/2 * * * *", async () => {
     // update the environmental context in the database 
     await ZoneState.findOneAndUpdate(
       { sectorId: sectorId },
-      { 
+      {
         weatherContext: { windSpeed: currentWind, temperature: currentTemp },
         lastUpdated: Date.now()
       }
