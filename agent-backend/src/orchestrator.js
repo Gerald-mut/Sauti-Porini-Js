@@ -258,6 +258,88 @@ function parseAgentResponse(rawText) {
   }
 }
 
+async function runAgentDispatch(threatContext, locale = 'en', onUpdate = () => {}) {
+  const promptContent = `LANGUAGE INSTRUCTION — THIS IS MANDATORY:
+The caller has specified locale: '${locale}'.
+If locale is 'sw': you MUST write the 'dispatch' field entirely in Swahili. This is non-negotiable. Do not write English in the dispatch field when locale is 'sw'. Use natural, professional Swahili as spoken in Kenya/East Africa.
+If locale is 'en': write the dispatch field in English.
+The 'reasoning' array, 'threat_label', and 'confidence' fields must ALWAYS be in English regardless of locale.
+
+Context: ${threatContext}`;
+
+  const conversation = await openAIClient.conversations.create({
+    items: [
+      {
+        type: "message",
+        role: "user",
+        content: promptContent,
+      },
+    ],
+  });
+
+  let response = await openAIClient.responses.create(
+    { conversation: conversation.id },
+    { body: { agent: { name: agent.name, type: "agent_reference" } } },
+  );
+
+  let iterations = 0;
+  const MAX_ITERATIONS = 5;
+  let finalDispatchData = {
+    confidence: 50,
+    reasoning: [],
+    threat_label: 'UNKNOWN',
+    dispatch: "Fallback: Analysis failed."
+  };
+  let fireSpreadData = null;
+
+  while (iterations < MAX_ITERATIONS) {
+    const functionCalls = response.output.filter((item) => item.type === "function_call");
+
+    if (functionCalls.length === 0) {
+      finalDispatchData = parseAgentResponse(response.output_text);
+      break;
+    }
+
+    onUpdate("thinking", `Iteration ${iterations + 1}: Agent analyzing data...`);
+
+    const toolResults = [];
+    for (const call of functionCalls) {
+      console.log(`[AGENT TOOL] Executing: ${call.name}`);
+      onUpdate("tool_execution", `Executing: ${call.name}`);
+
+      const resultText = await executeLocalTool(call);
+
+      console.log(`[AGENT TOOL] Result: ${resultText.substring(0, 150)}...`);
+      onUpdate("tool_result", `Result: ${resultText.substring(0, 200)}`);
+
+      if (call.name === "calculate_fire_spread") {
+        try {
+          fireSpreadData = JSON.parse(resultText);
+        } catch(e) {}
+      }
+
+      toolResults.push({
+        type: "function_call_output",
+        call_id: call.call_id || call.id,
+        output: resultText,
+      });
+    }
+
+    response = await openAIClient.responses.create(
+      { input: toolResults, previous_response_id: response.id },
+      { body: { agent: { name: agent.name, type: "agent_reference" } } }
+    );
+
+    iterations++;
+  }
+
+  if (fireSpreadData) {
+    finalDispatchData.fire_spread = fireSpreadData;
+  }
+
+  return finalDispatchData;
+}
+
 // API endpoint for threat analysis with Server-Sent Events
 app.post("/api/analyze", async (req, res) => {
   const { sectorId = "SECTOR-7-KAKAMEGA" } = req.body;
@@ -280,69 +362,9 @@ app.post("/api/analyze", async (req, res) => {
       `Alert received for ${sectorId}. Creating Investigation Thread...`,
     );
 
-    const conversation = await openAIClient.conversations.create({
-      items: [
-        {
-          type: "message",
-          role: "user",
-          content: `Please check the acoustic sensors in ${sectorId}. If there is a critical threat, take appropriate action.`,
-        },
-      ],
-    });
-
-    let response = await openAIClient.responses.create(
-      { conversation: conversation.id },
-      { body: { agent: { name: agent.name, type: "agent_reference" } } },
-    );
-
-    let iterations = 0;
-    const MAX_ITERATIONS = 5;
-
-    while (iterations < MAX_ITERATIONS) {
-      const functionCalls = response.output.filter(
-        (item) => item.type === "function_call",
-      );
-
-      if (functionCalls.length === 0) {
-        const finalData = parseAgentResponse(response.output_text);
-        sendUpdate("complete", finalData);
-        break;
-      }
-
-      sendUpdate(
-        "thinking",
-        `Iteration ${iterations + 1}: Agent analyzing data...`,
-      );
-      const toolResults = [];
-
-      for (const call of functionCalls) {
-        sendUpdate("tool_execution", `Executing: ${call.name}`);
-
-        const resultText = await executeLocalTool(call);
-
-        sendUpdate("tool_result", `Result: ${resultText.substring(0, 200)}`);
-
-        const safeCallId = call.call_id || call.id;
-        toolResults.push({
-          type: "function_call_output",
-          call_id: safeCallId,
-          output: resultText,
-        });
-      }
-
-      // Submit tool results back to Azure
-      response = await openAIClient.responses.create(
-        {
-          input: toolResults,
-          previous_response_id: response.id,
-        },
-        {
-          body: { agent: { name: agent.name, type: "agent_reference" } },
-        },
-      );
-
-      iterations++;
-    }
+    const threatContext = `Please check the acoustic sensors in ${sectorId}. If there is a critical threat, take appropriate action.`;
+    const finalData = await runAgentDispatch(threatContext, 'en', sendUpdate);
+    sendUpdate("complete", finalData);
   } catch (error) {
     console.error("Error during execution:", error);
     sendUpdate("error", `System failure: ${error.message || "Unknown error"}`);
@@ -394,64 +416,20 @@ app.post("/api/ussd", ussdLimiter, async (req, res) => {
     );
 
     try {
-      let promptContent = `A local community member just reported illegal logging via USSD in ${targetSector}. Please investigate using your satellite tools and draft a dispatch. Locale is '${locale}'.`;
+      let threatContext = `A local community member just reported illegal logging via USSD in ${targetSector}. Please investigate using your satellite tools and draft a dispatch.`;
 
       if (acoustic_classification) {
-        promptContent += ` Acoustic sensor classification: ${acoustic_classification.threat_label} detected with ${acoustic_classification.confidence}% confidence. Keywords: ${acoustic_classification.keywords_detected.join(", ")}. Pipeline: ${acoustic_classification.pipeline}`;
+        threatContext += ` Acoustic sensor classification: ${acoustic_classification.threat_label} detected with ${acoustic_classification.confidence}% confidence. Keywords: ${acoustic_classification.keywords_detected.join(", ")}. Pipeline: ${acoustic_classification.pipeline}`;
       }
 
-      const conversation = await openAIClient.conversations.create({
-        items: [
-          {
-            type: "message",
-            role: "user",
-            content: promptContent,
-          },
-        ],
-      });
-
-      let response = await openAIClient.responses.create(
-        { conversation: conversation.id },
-        { body: { agent: { name: agent.name, type: "agent_reference" } } },
+      // Stage 1: Escalate Zone to CRITICAL before agent runs (allows UI to show loader)
+      await ZoneState.findOneAndUpdate(
+        { sectorId: targetSector },
+        { currentState: "CRITICAL", lastUpdated: Date.now() },
+        { new: true, upsert: true }
       );
 
-      let iterations = 0;
-      const MAX_ITERATIONS = 5;
-      let finalDispatchData = {
-        confidence: 50,
-        reasoning: [],
-        threat_label: 'UNKNOWN',
-        dispatch: "Community report via USSD: Illegal Logging"
-      };
-
-      while (iterations < MAX_ITERATIONS) {
-        const functionCalls = response.output.filter((item) => item.type === "function_call");
-
-        if (functionCalls.length === 0) {
-          finalDispatchData = parseAgentResponse(response.output_text);
-          break;
-        }
-
-        const toolResults = [];
-        for (const call of functionCalls) {
-          console.log(`[AGENT TOOL] Executing: ${call.name}`);
-          const resultText = await executeLocalTool(call);
-          console.log(`[AGENT TOOL] Result: ${resultText.substring(0, 150)}...`);
-
-          toolResults.push({
-            type: "function_call_output",
-            call_id: call.call_id || call.id,
-            output: resultText,
-          });
-        }
-
-        response = await openAIClient.responses.create(
-          { input: toolResults, previous_response_id: response.id },
-          { body: { agent: { name: agent.name, type: "agent_reference" } } }
-        );
-
-        iterations++;
-      }
+      const finalDispatchData = await runAgentDispatch(threatContext, locale);
 
       // Save alert with coordinates
       const coords = SECTOR_MAP[targetSector] || SECTOR_MAP["DEFAULT"];
@@ -461,8 +439,9 @@ app.post("/api/ussd", ussdLimiter, async (req, res) => {
           currentState: "ALERT",
           lastUpdated: Date.now(),
           $push: { activeThreats: "Verified Citizen USSD Report received." },
-        },
+        }
       );
+      
       //generate the blockchain Hash to protect identity
       const phoneHash = crypto.createHash('sha256').update(phoneNumber).digest('hex');
       const maskedPhone = "***" + phoneNumber.slice(-4); // e.g., ***0000
@@ -472,7 +451,7 @@ app.post("/api/ussd", ussdLimiter, async (req, res) => {
         sectorId: targetSector,
         threatType: finalDispatchData.threat_label || "ussd",
         threat_label: finalDispatchData.threat_label,
-        confidence: finalDispatchData.confidence.toString(),
+        confidence: finalDispatchData.confidence?.toString() || "0",
         dispatchMessage: finalDispatchData.dispatch,
         dispatch: finalDispatchData.dispatch,
         reasoning: finalDispatchData.reasoning,
@@ -481,6 +460,7 @@ app.post("/api/ussd", ussdLimiter, async (req, res) => {
         blockchain_proof: phoneHash,
         lat: coords.lat,
         lon: coords.lon,
+        fire_spread: finalDispatchData.fire_spread || null
       });
 
       // escalate the state to alert
@@ -513,6 +493,22 @@ app.post("/api/demo/trigger-fire", async (req, res) => {
   console.log(`\n Simulating NASA FIRMS thermal anomaly in ${targetSector}...`);
 
   try {
+    const coords = SECTOR_MAP[targetSector] || SECTOR_MAP["DEFAULT"];
+    
+    // Create Alert record for the dashboard
+    await Alert.create({
+      sectorId: targetSector,
+      threatType: "satellite",
+      threat_label: "WILDFIRE",
+      confidence: "99",
+      dispatchMessage: "NASA FIRMS: High-confidence thermal anomaly detected.",
+      dispatch: "NASA FIRMS: High-confidence thermal anomaly detected.",
+      reasoning: ["Thermal infrared signatures match active wildfire."],
+      locale: "en",
+      lat: coords.lat,
+      lon: coords.lon,
+    });
+
     //change db to watch
     const updatedSector = await ZoneState.findOneAndUpdate(
       { sectorId: targetSector },
@@ -530,6 +526,52 @@ app.post("/api/demo/trigger-fire", async (req, res) => {
   } catch (error) {
     console.error("Demo Mode failed:", error);
     res.status(500).json({ error: "Failed to trigger simulated fire." });
+  }
+});
+
+// Endpoint to receive simulated acoustic sensor data
+app.post("/api/iot", async (req, res) => {
+  const { sectorId, soundType } = req.body;
+  if (!sectorId || !soundType) return res.status(400).json({ error: "Missing sectorId or soundType" });
+  
+  console.log(`\n [IoT SENSOR] Receiving acoustic anomaly in ${sectorId}: ${soundType}`);
+
+  try {
+    const coords = SECTOR_MAP[sectorId] || SECTOR_MAP["DEFAULT"];
+    const sensorId = `SENSOR-${Math.floor(Math.random() * 1000)}`;
+    
+    // Save IoT Alert
+    await Alert.create({
+      sectorId,
+      threatType: "iot",
+      threat_label: soundType,
+      confidence: "96",
+      dispatchMessage: `Acoustic anomaly detected: ${soundType}`,
+      dispatch: `Acoustic anomaly detected: ${soundType}`,
+      reasoning: [`Detected acoustic pattern matching ${soundType}`],
+      locale: "en",
+      sensor_id: sensorId,
+      sound_type: soundType,
+      lat: coords.lat,
+      lon: coords.lon,
+    });
+    
+    // Update zone state
+    const updatedSector = await ZoneState.findOneAndUpdate(
+      { sectorId },
+      {
+        currentState: "WATCH",
+        lastUpdated: Date.now(),
+        $push: { activeThreats: `Acoustic anomaly: ${soundType} detected.` }
+      },
+      { new: true }
+    );
+    
+    console.log(` [STATE CHANGE] Sector state updated to WATCH due to acoustic sensor.`);
+    res.json({ success: true, message: "IoT Alert received and processed.", sector: updatedSector });
+  } catch (error) {
+    console.error("IoT processing failed:", error);
+    res.status(500).json({ error: "Server error" });
   }
 });
 

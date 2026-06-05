@@ -55,8 +55,19 @@ async function runUSSDSimulation(localePrefix = "") {
     console.log("[AFRICA'S TALKING RESPONSE]:\n" + await res.text() + "\n");
 
     console.log("[USER] Phone interaction complete.");
+    
+    // Fetch the latest alert to view the generated dispatch
+    const alertsRes = await fetch('http://localhost:3000/api/alerts');
+    const alerts = await alertsRes.json();
+    const result = alerts[0] || {};
+    
     if (localePrefix === "*sw") {
       console.log("[LOCALE TEST] Swahili dispatch generated");
+      console.log('[SWAHILI DISPATCH]:', result.dispatch);
+      console.log('[ENGLISH REASONING]:', result.reasoning?.[0] || result.reasoning);
+    } else {
+      console.log('[ENGLISH DISPATCH]:', result.dispatch);
+      console.log('[ENGLISH REASONING]:', result.reasoning?.[0] || result.reasoning);
     }
   } catch (error) {
     console.error("Failed to reach the backend. Make sure orchestrator.js is running.", error);

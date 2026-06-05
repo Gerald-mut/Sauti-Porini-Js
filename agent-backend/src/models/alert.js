@@ -14,6 +14,13 @@ const AlertSchema = new mongoose.Schema({
   dispatch: String,
   reasoning: [String],
   locale: String,
+  sensor_id: String,
+  detected_at: { type: Date, default: Date.now },
+  fire_spread: {
+    spread_radius_km: Number,
+    primary_bearing_degrees: Number,
+    estimated_affected_area_km2: Number
+  },
   timestamp: { type: Date, default: Date.now }
 });
 
