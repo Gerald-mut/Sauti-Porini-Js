@@ -25,9 +25,9 @@ import fs from "fs";
 
 const KEYWORD_MAP = {
   ILLEGAL_LOGGING: ['chainsaw', 'cutting', 'logging', 'tree', 'motor'],
-  WILDFIRE:        ['fire', 'smoke', 'burning', 'flame', 'heat'],
+  WILDFIRE: ['fire', 'smoke', 'burning', 'flame', 'heat'],
   VEHICLE_INCURSION: ['vehicle', 'truck', 'engine', 'car', 'motor'],
-  GUNSHOT:         ['gunshot', 'shot', 'gun', 'rifle', 'bang']
+  GUNSHOT: ['gunshot', 'shot', 'gun', 'rifle', 'bang']
 };
 
 export async function classifyAudio(audioInput) {
@@ -58,10 +58,10 @@ export async function classifyAudio(audioInput) {
                 const pushStream = sdk.AudioInputStream.createPushStream();
                 pushStream.write(result.audioData);
                 pushStream.close();
-                
+
                 const audioConfigRec = sdk.AudioConfig.fromStreamInput(pushStream);
                 const recognizer = new sdk.SpeechRecognizer(speechConfig, audioConfigRec);
-                
+
                 recognizer.recognizeOnceAsync(
                   (recResult) => {
                     recognizer.close();
@@ -94,10 +94,10 @@ export async function classifyAudio(audioInput) {
             const pushStream = sdk.AudioInputStream.createPushStream();
             pushStream.write(fileBuffer.buffer ? fileBuffer.buffer.slice(fileBuffer.byteOffset, fileBuffer.byteOffset + fileBuffer.byteLength) : fileBuffer);
             pushStream.close();
-            
+
             const audioConfigRec = sdk.AudioConfig.fromStreamInput(pushStream);
             const recognizer = new sdk.SpeechRecognizer(speechConfig, audioConfigRec);
-            
+
             recognizer.recognizeOnceAsync(
               (result) => {
                 recognizer.close();

@@ -12,7 +12,7 @@ import { ZoneState } from "./models/ZoneState.js";
 import crypto from "crypto";
 import rateLimit from "express-rate-limit";
 
-// --- CHANGE 1: Env-var validation on startup ---
+// ensures all .env variables are there
 const REQUIRED_ENV_VARS = [
   "PORT",
   "MONGODB_URI",
@@ -21,21 +21,22 @@ const REQUIRED_ENV_VARS = [
   "OPENWEATHER_API_KEY"
 ];
 
+//checks if the server has all the api keys it needs before running
 const missingEnvVars = REQUIRED_ENV_VARS.filter(
   (varName) => !process.env[varName] || process.env[varName].trim() === ""
 );
 
 if (missingEnvVars.length > 0) {
-  console.error("❌ Missing required environment variables:\n" + missingEnvVars.map(v => `   - ${v}`).join("\n"));
+  console.error("Missing required environment variables:\n" + missingEnvVars.map(v => `   - ${v}`).join("\n"));
   process.exit(1);
 } else {
-  console.log("✓ All required environment variables present");
+  console.log("All required environment variables present");
 }
 
 const OPTIONAL_ENV_VARS = ["AZURE_SPEECH_KEY", "AZURE_SPEECH_REGION"];
 const missingOptional = OPTIONAL_ENV_VARS.filter(v => !process.env[v] || process.env[v].trim() === "");
 if (missingOptional.length > 0) {
-  console.warn("⚠ Missing optional environment variables (Acoustic classification will use mock_fallback): " + missingOptional.join(", "));
+  console.warn("Missing optional environment variables (Acoustic classification will use mock_fallback): " + missingOptional.join(", "));
 }
 
 // Rate limiter for USSD route
@@ -52,7 +53,7 @@ console.log('AZURE ENDPOINT loaded:', !!process.env.AZURE_AI_PROJECT_ENDPOINT);
 //connect to Azure CosmosDB
 async function connectDatabase() {
   try {
-    // You will put your Azure Cosmos DB connection string in your .env file
+    //put Azure Cosmos DB connection string in  .env file
     await mongoose.connect(process.env.MONGODB_URI);
     console.log(
       " [DATABASE] Connected to Azure Cosmos DB (State Memory Online)",
@@ -207,7 +208,6 @@ async function initServices() {
     `System Ready! Agent ${agent.name} v${agent.version} listening on port ${PORT}`,
   );
 }
-
 async function executeLocalTool(call) {
   try {
     const args = JSON.parse(call.arguments || "{}");
@@ -226,14 +226,14 @@ async function executeLocalTool(call) {
       });
     } else if (call.name === "calculate_fire_spread") {
       const { wind_speed_kmh, wind_direction_degrees, ignition_lat, ignition_lon } = args;
-      const spread_radius_km = wind_speed_kmh * 0.5 * (30/60);
+      const spread_radius_km = wind_speed_kmh * 0.5 * (30 / 60);
       return JSON.stringify({
         spread_radius_km,
         primary_bearing_degrees: wind_direction_degrees,
         estimated_affected_area_km2: Math.PI * Math.pow(spread_radius_km, 2)
       });
     }
-    
+
     // Fallback to MCP tools
     const mcpResult = await mcpClient.callTool({ name: call.name, arguments: args });
     return mcpResult.content[0].text;
@@ -395,7 +395,7 @@ app.post("/api/ussd", ussdLimiter, async (req, res) => {
 
     try {
       let promptContent = `A local community member just reported illegal logging via USSD in ${targetSector}. Please investigate using your satellite tools and draft a dispatch. Locale is '${locale}'.`;
-      
+
       if (acoustic_classification) {
         promptContent += ` Acoustic sensor classification: ${acoustic_classification.threat_label} detected with ${acoustic_classification.confidence}% confidence. Keywords: ${acoustic_classification.keywords_detected.join(", ")}. Pipeline: ${acoustic_classification.pipeline}`;
       }
@@ -426,7 +426,7 @@ app.post("/api/ussd", ussdLimiter, async (req, res) => {
 
       while (iterations < MAX_ITERATIONS) {
         const functionCalls = response.output.filter((item) => item.type === "function_call");
-        
+
         if (functionCalls.length === 0) {
           finalDispatchData = parseAgentResponse(response.output_text);
           break;

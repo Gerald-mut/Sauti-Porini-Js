@@ -22,7 +22,7 @@ export const fetchAllAlerts = async () => {
 export const fetchZoneStates = async () => {
   try {
     const response = await axios.get(`${API_BASE_URL}/zones`);
-    return response.data;
+    return response.data.zones || [];
   } catch (error) {
     console.error("Error fetching zone states:", error);
     return [];
