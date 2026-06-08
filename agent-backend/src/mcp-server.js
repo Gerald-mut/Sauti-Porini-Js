@@ -4,6 +4,7 @@ import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
+import logger from "./utils/logger.js";
 
 // Initialize the mcp server
 const server = new Server(
@@ -81,7 +82,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === "get_acoustic_data") {
     // Simulating offline edge-AI acoustic detection
-    console.log(`Fetching sensor data for ${args.sector_id}...`);
+    logger.info(`Fetching sensor data for ${args.sector_id}...`);
     return {
       content: [
         {
@@ -100,7 +101,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   if (name === "draft_ranger_dispatch") {
     // Simulating drafting a message to a database
-    console.log(
+    logger.info(
       `Drafting ${args.urgency} urgency dispatch for ${args.threat_type}...`,
     );
     const draftMessage = `ALERT: ${args.threat_type} detected at ${args.location}. Urgency: ${args.urgency}. Please verify and respond.`;
@@ -140,7 +141,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  console.error("Sauti Porini MCP Server running on stdio");
+  logger.error("Sauti Porini MCP Server running on stdio");
 }
 
-main().catch(console.error);
+main().catch(err => logger.error("Server failed", err));

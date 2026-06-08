@@ -1,10 +1,12 @@
+import logger from "./utils/logger.js";
+
 async function simulateChainsaw() {
-  console.log("Booting up acoustic sensor in SECTOR-7...");
+  logger.info("Booting up acoustic sensor in SECTOR-7...");
   
   setTimeout(async () => {
-    console.log("DEVICE: Anomaly detected: Chainsaw Motor!");
-    console.log("Confidence: 96%");
-    console.log("DEVICE: Transmitting alert to Sauti Porini State Machine...\n");
+    logger.info("DEVICE: Anomaly detected: Chainsaw Motor!");
+    logger.info("Confidence: 96%");
+    logger.info("DEVICE: Transmitting alert to Sauti Porini State Machine...\n");
 
     try {
       // Send the alert to the NEW IoT endpoint
@@ -15,10 +17,10 @@ async function simulateChainsaw() {
       });
       
       const data = await response.json();
-      console.log(`[CLOUD RESPONSE] ${data.message}`);
+      logger.info(`[CLOUD RESPONSE] ${data.message}`);
       
     } catch (error) {
-      console.error(
+      logger.error(
         "Failed to reach the cloud server. Is orchestrator.js running?",
         error,
       );

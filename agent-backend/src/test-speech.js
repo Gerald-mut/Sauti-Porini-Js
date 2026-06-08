@@ -1,8 +1,11 @@
 import sdk from 'microsoft-cognitiveservices-speech-sdk';
+import "dotenv/config";
+import config from "./config/index.js";
+import logger from "./utils/logger.js";
 
 const speechConfig = sdk.SpeechConfig.fromSubscription(
-  process.env.AZURE_SPEECH_KEY,
-  process.env.AZURE_SPEECH_REGION
+  config.azureSpeechKey,
+  config.azureSpeechRegion
 );
 
 const synthesizer = new sdk.SpeechSynthesizer(speechConfig);
@@ -11,14 +14,14 @@ synthesizer.speakTextAsync(
   'chainsaw motor revving in dense forest',
   result => {
     if (result.reason === sdk.ResultReason.SynthesizingAudioCompleted) {
-      console.log('✓ Azure Speech connection working — audio synthesized');
+      logger.info('✓ Azure Speech connection working — audio synthesized');
     } else {
-      console.error('✗ Synthesis failed:', result.errorDetails);
+      logger.error('✗ Synthesis failed:', result.errorDetails);
     }
     synthesizer.close();
   },
   err => {
-    console.error('✗ Connection failed:', err);
+    logger.error('✗ Connection failed:', err);
     synthesizer.close();
   }
 );

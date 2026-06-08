@@ -1,10 +1,13 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import ForestMap from "./ForestMap";
 import { TreeDeciduous, Activity, Users, Wifi, Menu } from "lucide-react";
 import GlassModal from "./components/GlassModal";
 import Sidebar from "./components/Sidebar";
 import LiveTerminal from "./components/LiveTerminal";
 import { fetchAllAlerts, fetchZoneStates } from "./services/api";
+import ThreatTimeline from "./components/ThreatTimeline";
+import { useThreatEvents } from "./hooks/useThreatEvents";
+import DispatchLoader from "./components/DispatchLoader";
 
 function App() {
   const [zones, setZones] = useState([]);
@@ -16,6 +19,50 @@ function App() {
 
   const [selectedCategory, setSelectedCategory] = useState(null);
   const [isSidebarOpen, setIsSidebarOpen] = useState(false);
+  const [fireSpreadAlert, setFireSpreadAlert] = useState(null);
+
+  // Agent Loader State
+  const [isAgentLoading, setIsAgentLoading] = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const loadingZoneRef = useRef("");
+  const timerRef = useRef(null);
+
+  // Initialize the threat timeline events hook
+  const { events, clearEvents } = useThreatEvents(
+    (zoneId) => {
+      setIsAgentLoading(true);
+      loadingZoneRef.current = zoneId;
+      setElapsedSeconds(0);
+      if (timerRef.current) clearInterval(timerRef.current);
+      
+      timerRef.current = setInterval(() => {
+        setElapsedSeconds(prev => {
+          if (prev >= 30) {
+            console.warn("Agent dispatch timed out after 30 seconds.");
+            setIsAgentLoading(false);
+            loadingZoneRef.current = "";
+            clearInterval(timerRef.current);
+            return prev;
+          }
+          return prev + 1;
+        });
+      }, 1000);
+    },
+    (zoneId) => {
+      if (loadingZoneRef.current === zoneId) {
+        setIsAgentLoading(false);
+        loadingZoneRef.current = "";
+        if (timerRef.current) clearInterval(timerRef.current);
+      }
+    }
+  );
+
+  // Cleanup interval on unmount
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearInterval(timerRef.current);
+    };
+  }, []);
 
   // Fetch data from separate endpoints
   useEffect(() => {
@@ -30,16 +77,14 @@ function App() {
 
         // Keep your existing client-side filtering for the Data Tables
         setData({
-          satellite_alerts: allAlerts.filter((a) =>
-            ["satellite", "logging", "fire"].includes(
-              String(a.threatType).toLowerCase(),
-            ),
+          satellite_alerts: allAlerts.filter(
+            (a) => !a.phone_number && !a.sensor_id
           ),
           ussd_reports: allAlerts.filter(
-            (a) => String(a.threatType).toLowerCase() === "ussd",
+            (a) => !!a.phone_number || String(a.threatType).toLowerCase() === "ussd"
           ),
           iot_events: allAlerts.filter(
-            (a) => String(a.threatType).toLowerCase() === "iot",
+            (a) => !!a.sensor_id || String(a.threatType).toLowerCase() === "iot"
           ),
         });
       } catch (error) {
@@ -51,6 +96,14 @@ function App() {
     const interval = setInterval(loadData, 5000);
     return () => clearInterval(interval);
   }, []);
+
+  // Track latest alert for fire spread overlay
+  useEffect(() => {
+    if (events.length > 0) {
+      const latest = events[0];
+      setFireSpreadAlert(prev => prev?.id === latest.id ? prev : latest);
+    }
+  }, [events]);
 
   const getModalTitle = () => {
     switch (selectedCategory) {
@@ -68,7 +121,7 @@ function App() {
   return (
     <div className="relative w-full h-screen bg-black overflow-hidden font-sans">
       {/* ForestMap handles the Visuals */}
-      <ForestMap zoneData={zones} />
+      <ForestMap zoneData={zones} fireSpreadAlert={fireSpreadAlert} onClearFireSpread={() => setFireSpreadAlert(null)} />
 
       {/* Sidebar Navigation */}
       <Sidebar
@@ -77,8 +130,14 @@ function App() {
         onSelectCategory={setSelectedCategory}
       />
 
+      {/* Threat Escalation Timeline */}
+      <ThreatTimeline events={events} onClear={clearEvents} />
+
+      {/* Agent Loading State */}
+      <DispatchLoader isLoading={isAgentLoading} elapsedSeconds={elapsedSeconds} zoneId={loadingZoneRef.current} />
+
       {/* --- HUD HEADER --- */}
-      <div className="absolute top-4 left-4 right-4 flex justify-between items-start pointer-events-none z-10">
+      <div className="absolute top-4 left-4 right-24 flex justify-between items-start pointer-events-none z-10">
         <div
           onClick={() => setIsSidebarOpen(true)}
           className="pointer-events-auto bg-black/40 backdrop-blur-xl border border-white/10 p-4 rounded-2xl shadow-2xl flex items-center gap-4 cursor-pointer hover:bg-black/50 transition-colors group"

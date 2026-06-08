@@ -1,11 +1,43 @@
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import Map, { Marker, Popup, Source, NavigationControl } from "react-map-gl";
+import Map, { Marker, Popup, Source, Layer, NavigationControl } from "react-map-gl";
 import { AlertTriangle, MapPin, X, Wind, Thermometer, Radio } from "lucide-react";
+
+// Helper function to generate directional ellipse GeoJSON
+function computeSpreadCircle(centerLat, centerLon, radiusKm, bearingDeg) {
+  const points = 64;
+  const coords = [];
+  const R = 6371; // Earth's radius in km
+
+  for (let i = 0; i <= points; i++) {
+    const angleDeg = (i * 360) / points;
+    const relAngleDeg = Math.abs((angleDeg - bearingDeg + 360) % 360);
+    
+    let d = radiusKm;
+    if (relAngleDeg <= 90 || relAngleDeg >= 270) {
+      const ratio = Math.cos((relAngleDeg * Math.PI) / 180);
+      d = radiusKm * (0.4 + 0.6 * Math.abs(ratio));
+    } else {
+      const ratio = Math.cos(((180 - relAngleDeg) * Math.PI) / 180);
+      d = radiusKm * (0.4 - 0.2 * Math.abs(ratio));
+    }
+
+    const angleRad = (angleDeg * Math.PI) / 180;
+    const offsetLat = centerLat + (d/R) * Math.cos(angleRad) * (180/Math.PI);
+    const offsetLon = centerLon + (d/R) * Math.sin(angleRad) * (180/Math.PI) / Math.cos(centerLat * Math.PI/180);
+
+    coords.push([offsetLon, offsetLat]);
+  }
+
+  return {
+    type: "Feature",
+    geometry: { type: "Polygon", coordinates: [coords] }
+  };
+}
 
 const MAPBOX_TOKEN = import.meta.env.VITE_MAPBOX_TOKEN;
 
-const ForestMap = ({ zoneData = [] }) => {
+const ForestMap = ({ zoneData = [], fireSpreadAlert = null, onClearFireSpread }) => {
   const [popupInfo, setPopupInfo] = useState(null);
 
   const [viewState, setViewState] = useState({
@@ -15,6 +47,20 @@ const ForestMap = ({ zoneData = [] }) => {
     pitch: 60,
     bearing: -10,
   });
+
+  useEffect(() => {
+    if (fireSpreadAlert) {
+      if (fireSpreadAlert.fire_spread) {
+        const timer = setTimeout(() => {
+          if (onClearFireSpread) onClearFireSpread();
+        }, 5 * 60 * 1000); // auto-remove after 5 minutes
+        return () => clearTimeout(timer);
+      } else {
+        console.log("[MAP] Wind below threshold — no spread overlay");
+        if (onClearFireSpread) onClearFireSpread();
+      }
+    }
+  }, [fireSpreadAlert, onClearFireSpread]);
 
   return (
     <div className="w-full h-full relative bg-black">
@@ -68,6 +114,72 @@ const ForestMap = ({ zoneData = [] }) => {
             </Marker>
           );
         })}
+
+        {/* --- FIRE SPREAD OVERLAY --- */}
+        {fireSpreadAlert && fireSpreadAlert.fire_spread && (
+          <Source 
+            id="fire-spread-source" 
+            type="geojson" 
+            data={{
+              type: "FeatureCollection",
+              features: [computeSpreadCircle(
+                fireSpreadAlert.lat || (zoneData.find(z => z.sectorId === fireSpreadAlert.zone_id)?.lat),
+                fireSpreadAlert.lon || (zoneData.find(z => z.sectorId === fireSpreadAlert.zone_id)?.lon),
+                fireSpreadAlert.fire_spread.spread_radius_km, 
+                fireSpreadAlert.fire_spread.primary_bearing_degrees
+              )]
+            }}
+          >
+            <Layer 
+              id="fire-spread-layer" 
+              type="fill" 
+              paint={{
+                'fill-color': '#ff4400',
+                'fill-opacity': 0.25,
+                'fill-outline-color': '#ff2200'
+              }} 
+            />
+            <Layer 
+              id="fire-spread-outline" 
+              type="line" 
+              paint={{
+                'line-color': '#ff2200',
+                'line-width': 1.5,
+                'line-dasharray': [2, 2]
+              }} 
+            />
+          </Source>
+        )}
+
+        {/* --- FIRE SPREAD POPUP --- */}
+        {fireSpreadAlert && fireSpreadAlert.fire_spread && (
+          <Popup
+            longitude={fireSpreadAlert.lon || (zoneData.find(z => z.sectorId === fireSpreadAlert.zone_id)?.lon)}
+            latitude={fireSpreadAlert.lat || (zoneData.find(z => z.sectorId === fireSpreadAlert.zone_id)?.lat)}
+            closeButton={false}
+            className="forest-popup"
+            offset={30}
+          >
+            <div className="bg-red-900/95 backdrop-blur-md border border-red-500 text-white rounded-lg p-3 shadow-2xl text-xs font-mono min-w-[200px]">
+              <div className="font-bold mb-2 flex items-center gap-2 text-red-400">
+                <AlertTriangle size={14}/> Predicted Spread
+              </div>
+              <div className="space-y-1">
+                <div className="flex justify-between">
+                  <span className="text-red-200">Radius:</span>
+                  <span>{fireSpreadAlert.fire_spread.spread_radius_km.toFixed(2)} km</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-red-200">Area:</span>
+                  <span>{fireSpreadAlert.fire_spread.estimated_affected_area_km2.toFixed(2)} km²</span>
+                </div>
+              </div>
+              <div className="text-red-300 mt-2 text-[10px] uppercase text-center bg-black/30 p-1 rounded">
+                30 min estimate
+              </div>
+            </div>
+          </Popup>
+        )}
 
         {/* --- DYNAMIC POPUP --- */}
         {popupInfo && (

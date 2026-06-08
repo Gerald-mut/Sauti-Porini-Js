@@ -1,3 +1,4 @@
+import logger from "./utils/logger.js";
 
 // Simulates what the USSD webhook route handler should be doing
 function extractLocale(ussdInput) {
@@ -16,5 +17,5 @@ const cases = [
 for (const c of cases) {
   const result = extractLocale(c.input);
   const pass = result === c.expected;
-  console.log(`${pass ? '✓' : '✗'} Input: "${c.input}" → got: ${result} | expected: ${c.expected}`);
+  logger.info(`${pass ? '✓' : '✗'} Input: "${c.input}" → got: ${result} | expected: ${c.expected}`);
 }
