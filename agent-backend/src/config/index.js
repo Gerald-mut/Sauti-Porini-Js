@@ -31,4 +31,12 @@ export default Object.freeze({
   defaultSector: "SECTOR-7-KAKAMEGA",
   maxConfidenceCap: 95,
   openWeatherBaseUrl: "https://api.openweathermap.org/data/2.5/weather",
+  azureAgentFailureThreshold: 3,
+  azureAgentCallTimeoutMs: 45000,
+  speechFailureThreshold: 3,
+  speechCallTimeoutMs: 15000,
+  firmsFailureThreshold: 5,
+  firmsCallTimeoutMs: 10000,
+  weatherFailureThreshold: 4,
+  weatherCallTimeoutMs: 8000,
 });

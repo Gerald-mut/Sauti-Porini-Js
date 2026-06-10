@@ -5,6 +5,7 @@
  */
 import { ZoneState } from "../models/ZoneState.js";
 import config from "../config/index.js";
+import { getAllBreakerStatuses } from "../utils/circuitBreaker.js";
 
 /**
  * Retrieves the current status and data for zones, optionally filtered by state.
@@ -79,7 +80,8 @@ export const getHealth = async (req, res, next) => {
         watch,
         critical
       },
-      uptime_seconds: Math.round(process.uptime())
+      uptime_seconds: Math.round(process.uptime()),
+      breakers: getAllBreakerStatuses()
     });
   } catch (error) {
     error.status = 503;

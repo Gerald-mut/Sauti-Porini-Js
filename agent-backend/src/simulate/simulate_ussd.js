@@ -1,4 +1,15 @@
 import { classifyAudio } from "../services/acousticService.js";
+import { getCircuitBreaker } from "../utils/circuitBreaker.js";
+
+const FALLBACK_DEMO = process.argv.includes('--fallback-demo');
+
+if (FALLBACK_DEMO) {
+  const breaker = getCircuitBreaker('azure-agent');
+  breaker.state = 'OPEN';
+  breaker.lastFailureTime = Date.now() - 1000;
+  breaker.lastError = new Error('Simulated Azure outage');
+  console.log('[FALLBACK DEMO] Azure agent circuit forced OPEN — dispatch will use template fallback');
+}
 
 //allback if africas talking ussd isnt working
 async function runUSSDSimulation(localePrefix = "") {

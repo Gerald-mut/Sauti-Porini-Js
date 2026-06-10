@@ -12,8 +12,74 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { AIProjectClient } from "@azure/ai-projects";
 import { DefaultAzureCredential } from "@azure/identity";
+import { getCircuitBreaker } from "../utils/circuitBreaker.js";
 
 let mcpClient, openAIClient, agent, azureTools;
+
+function buildTemplateFallback(threatContext, locale) {
+  const threatDescriptions = {
+    ILLEGAL_LOGGING: {
+      en: 'Illegal logging activity detected',
+      sw: 'Shughuli ya ukataji miti haramu imegunduliwa',
+      fr: 'Activité d\'exploitation forestière illégale détectée'
+    },
+    WILDFIRE: {
+      en: 'Wildfire risk detected',
+      sw: 'Hatari ya moto msituni imegunduliwa',
+      fr: 'Risque d\'incendie de forêt détecté'
+    },
+    VEHICLE_INCURSION: {
+      en: 'Unauthorised vehicle detected in protected zone',
+      sw: 'Gari lisiloidhinishwa limegunduliwa katika eneo lililohifadhiwa',
+      fr: 'Véhicule non autorisé détecté en zone protégée'
+    },
+    GUNSHOT: {
+      en: 'Gunshot detected — possible poaching activity',
+      sw: 'Risasi imegunduliwa — shughuli ya ujangili inawezekana',
+      fr: 'Coup de feu détecté — activité de braconnage possible'
+    },
+    UNKNOWN: {
+      en: 'Unclassified threat detected',
+      sw: 'Tishio lisilotambuliwa limegunduliwa',
+      fr: 'Menace non classifiée détectée'
+    }
+  }
+
+  let parsedContext = threatContext;
+  if (typeof threatContext === 'string') {
+    try { parsedContext = JSON.parse(threatContext); } catch(e) { parsedContext = {}; }
+  }
+
+  const label = parsedContext.acoustic?.threat_label || 'UNKNOWN'
+  const lang = locale || 'en'
+  const desc = threatDescriptions[label]?.[lang] || threatDescriptions.UNKNOWN[lang]
+
+  return {
+    confidence: parsedContext.acoustic?.confidence || 45,
+    reasoning: [
+      'AI agent unavailable — using template fallback dispatch',
+      `Threat signal: ${label} from acoustic/thermal pipeline`,
+      `Zone: ${parsedContext.zone_id || 'unknown'}`,
+      'Recommend immediate ranger verification'
+    ],
+    threat_label: label,
+    dispatch: `ALERT — ${desc}. Zone: ${parsedContext.zone_id || 'unknown'}. Immediate ranger deployment recommended. AI analysis temporarily unavailable — treat as confirmed threat until verified.`,
+    locale: lang,
+    fallback: true
+  }
+}
+
+const agentBreaker = getCircuitBreaker('azure-agent', {
+  failureThreshold: config.azureAgentFailureThreshold,
+  callTimeoutMs: config.azureAgentCallTimeoutMs,
+  fallback: (error, threatContext, locale) => {
+    logger.warn(
+      '[AGENT FALLBACK] Azure agent unavailable — ' +
+      `using template dispatch. Reason: ${error.message}`
+    )
+    return buildTemplateFallback(threatContext, locale)
+  }
+});
 
 /**
  * Initializes the Azure AI Project Client, MCP Client, and creates the agent version.
@@ -201,7 +267,11 @@ function parseAgentResponse(rawText) {
  * @returns {Promise<Object>} The final drafted dispatch and threat data
  * @throws {Error} When the conversation with OpenAI fails
  */
-export async function runAgentDispatch(threatContext, locale = 'en', onUpdate = () => {}) {
+export function runAgentDispatch(threatContext, locale = 'en', onUpdate = () => {}) {
+  return agentBreaker.fire(runAgentDispatchInternal, threatContext, locale, onUpdate);
+}
+
+async function runAgentDispatchInternal(threatContext, locale = 'en', onUpdate = () => {}) {
   try {
     const promptContent = `LANGUAGE INSTRUCTION — THIS IS MANDATORY:
 The caller has specified locale: '${locale}'.

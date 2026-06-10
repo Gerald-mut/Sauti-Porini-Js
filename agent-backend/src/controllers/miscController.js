@@ -199,3 +199,101 @@ export const demoReset = async (req, res, next) => {
     next(error);
   }
 };
+
+/**
+ * Processes an incoming thermal anomaly alert and escalates the zone state.
+ *
+ * @param {Object} req - Express request object
+ * @param {Object} res - Express response object
+ * @param {Function} next - Express next middleware function
+ * @returns {Promise<void>} Resolves when the response is sent
+ */
+export const thermalAlert = async (req, res, next) => {
+  try {
+    const { sectorId, state, context } = req.body;
+    
+    if (!sectorId || !state || !context) {
+      return res.status(400).json({ 
+        error: "Missing required fields",
+        required: ["sectorId", "state", "context"],
+        timestamp: new Date().toISOString()
+      });
+    }
+
+    logger.info(`\n [THERMAL SENSOR] Receiving thermal anomaly in ${sectorId}: ${context.temp_celsius}°C (${state})`);
+
+    const coords = config.sectorMap[sectorId] || config.sectorMap["DEFAULT"];
+
+    if (state === "WATCH") {
+      const updatedSector = await ZoneState.findOneAndUpdate(
+        { sectorId },
+        {
+          currentState: "WATCH",
+          lastUpdated: Date.now(),
+          $push: { activeThreats: `Thermal Anomaly: Rapid temperature rise (+${context.delta_celsius.toFixed(1)}°C).` }
+        },
+        { new: true, upsert: true }
+      );
+      
+      logger.info(` [STATE CHANGE] Sector state updated to WATCH due to thermal sensor.`);
+      return res.status(200).json({ 
+        success: true, 
+        message: "Thermal Alert (WATCH) processed.", 
+        sector: updatedSector,
+        timestamp: new Date().toISOString()
+      });
+    } else if (state === "CRITICAL") {
+      // Transition to CRITICAL and run AI agent dispatch
+      await ZoneState.findOneAndUpdate(
+        { sectorId },
+        { currentState: "CRITICAL", lastUpdated: Date.now() },
+        { new: true, upsert: true }
+      );
+
+      let threatContextStr = `A thermal sensor in ${sectorId} has reported a critical temperature spike. Current reading: ${context.temp_celsius}°C (Delta: +${context.delta_celsius.toFixed(1)}°C from ambient).`;
+      
+      if (context.acoustic_classification) {
+        threatContextStr += ` Additional context from acoustic sensor: ${context.acoustic_classification.threat_label} detected with ${context.acoustic_classification.confidence}% confidence. Keywords: ${context.acoustic_classification.keywords_detected.join(", ")}.`;
+      }
+
+      const finalDispatchData = await runAgentDispatch(threatContextStr, 'en');
+      
+      await Alert.create({
+        sectorId,
+        threatType: finalDispatchData.threat_label || "thermal",
+        threat_label: finalDispatchData.threat_label,
+        confidence: context.confidence?.toString() || finalDispatchData.confidence?.toString() || "91",
+        dispatchMessage: finalDispatchData.dispatch,
+        dispatch: finalDispatchData.dispatch,
+        reasoning: finalDispatchData.reasoning,
+        locale: finalDispatchData.locale,
+        lat: coords.lat,
+        lon: coords.lon,
+        fire_spread: finalDispatchData.fire_spread || null,
+        sensor_id: "THERMAL-SENSOR-01"
+      });
+
+      const updatedSector = await ZoneState.findOneAndUpdate(
+        { sectorId },
+        {
+          currentState: 'ALERT',
+          lastUpdated: Date.now(),
+          $push: { activeThreats: `Verified Thermal Threat: ${context.temp_celsius}°C.` }
+        },
+        { new: true }
+      );
+
+      logger.info(`[THERMAL] Critical alert dispatched and saved for ${sectorId}`);
+      return res.status(200).json({ 
+        success: true, 
+        message: "Thermal Alert (CRITICAL) processed and dispatched.", 
+        sector: updatedSector,
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      return res.status(400).json({ error: "Invalid state. Must be WATCH or CRITICAL" });
+    }
+  } catch (error) {
+    next(error);
+  }
+};

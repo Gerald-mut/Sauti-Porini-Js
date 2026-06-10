@@ -7,6 +7,19 @@ import cron from "node-cron";
 import { ZoneState } from "../models/ZoneState.js";
 import config from "../config/index.js";
 import logger from "../utils/logger.js";
+import { getCircuitBreaker } from "../utils/circuitBreaker.js";
+
+const firmsBreaker = getCircuitBreaker('nasa-firms', {
+  failureThreshold: config.firmsFailureThreshold,
+  callTimeoutMs: config.firmsCallTimeoutMs,
+  fallback: (error) => {
+    logger.warn(
+      `[FIRMS FALLBACK] NASA FIRMS unavailable — ` +
+      `skipping this poll cycle. Reason: ${error.message}`
+    )
+    return []   // empty detections — state machine gets no new input
+  }
+});
 
 /**
  * Polls FIRMS and open weather data for the default sector and updates the zone state.
@@ -21,6 +34,16 @@ export const pollFIRMS = async () => {
     const sectorId = config.defaultSector;
     const sector = await ZoneState.findOne({ sectorId: sectorId });
     const coords = config.sectorMap[sectorId];
+
+    const fetchFirmsData = async () => {
+      if (!config.nasaFirmsKey) return [];
+      const url = `https://firms.modaps.eosdis.nasa.gov/api/area/csv/${config.nasaFirmsKey}/VIIRS_SNPP_NRT/${config.firmsBoundingBox}/1`;
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`FIRMS HTTP Error: ${res.status}`);
+      return await res.text();
+    };
+
+    const firmsData = await firmsBreaker.fire(fetchFirmsData);
 
     //fetch Weather Data from open weather map
     let currentWind = 10;

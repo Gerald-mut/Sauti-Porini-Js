@@ -1,1 +1,0 @@
-// This file has been migrated to simulate/simulate_fire.js
