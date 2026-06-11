@@ -43,6 +43,9 @@ export const handleUssd = async (req, res, next) => {
     if (text.startsWith("*sw*") || text === "*sw") {
       locale = "sw";
       processedText = text.replace(/^\*sw\*/, "").replace(/^\*sw$/, "");
+    } else if (text.startsWith("*fr*") || text === "*fr") {
+      locale = "fr";
+      processedText = text.replace(/^\*fr\*/, "").replace(/^\*fr$/, "");
     } else if (text.startsWith("*en*") || text === "*en") {
       locale = "en";
       processedText = text.replace(/^\*en\*/, "").replace(/^\*en$/, "");

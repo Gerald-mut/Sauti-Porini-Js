@@ -1,0 +1,3 @@
+@echo off
+echo [RESET] Resetting all zones to NORMAL state...
+node --env-file=.env src\simulate\reset_db.js

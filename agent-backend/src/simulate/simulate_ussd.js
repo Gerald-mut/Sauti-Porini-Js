@@ -13,7 +13,7 @@ if (FALLBACK_DEMO) {
 
 //allback if africas talking ussd isnt working
 async function runUSSDSimulation(localePrefix = "") {
-  const url = 'http://localhost:3000/api/ussd';
+  const url = 'http://localhost:3000/ussd';
   
   // The standard payload Africa's Talking sends with every request
   const basePayload = {
@@ -76,6 +76,10 @@ async function runUSSDSimulation(localePrefix = "") {
       console.log("[LOCALE TEST] Swahili dispatch generated");
       console.log('[SWAHILI DISPATCH]:', result.dispatch);
       console.log('[ENGLISH REASONING]:', result.reasoning?.[0] || result.reasoning);
+    } else if (localePrefix === "*fr") {
+      console.log("[LOCALE TEST] French dispatch generated");
+      console.log('[FRENCH DISPATCH]:', result.dispatch);
+      console.log('[ENGLISH REASONING]:', result.reasoning?.[0] || result.reasoning);
     } else {
       console.log('[ENGLISH DISPATCH]:', result.dispatch);
       console.log('[ENGLISH REASONING]:', result.reasoning?.[0] || result.reasoning);
@@ -88,6 +92,9 @@ async function runUSSDSimulation(localePrefix = "") {
 async function runTests() {
   await runUSSDSimulation(""); // English
   await runUSSDSimulation("*sw"); // Swahili
+  console.log('[LOCALE TEST] Running French dispatch test...');
+  await runUSSDSimulation("*fr"); // French
+  console.log('[FRENCH LOCALE TEST] Complete');
 }
 
 runTests();

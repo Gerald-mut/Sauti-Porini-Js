@@ -51,7 +51,7 @@ function buildTemplateFallback(threatContext, locale) {
   }
 
   const label = parsedContext.acoustic?.threat_label || 'UNKNOWN'
-  const lang = locale || 'en'
+  const lang = ['en','sw','fr'].includes(locale) ? locale : 'en';
   const desc = threatDescriptions[label]?.[lang] || threatDescriptions.UNKNOWN[lang]
 
   return {
@@ -181,7 +181,7 @@ Your final response MUST be a valid JSON object with exactly these fields:
   ],
   "threat_label": "<one of: ILLEGAL_LOGGING, WILDFIRE, VEHICLE_INCURSION, UNKNOWN>",
   "dispatch": "<the full tactical ranger dispatch text>",
-  "locale": "<'en' or 'sw' matching the requested language>"
+  "locale": "<'en', 'sw' or 'fr' matching the requested language>"
 }
 Do not wrap it in markdown code fences. Return raw JSON only.
 
@@ -275,9 +275,22 @@ async function runAgentDispatchInternal(threatContext, locale = 'en', onUpdate =
   try {
     const promptContent = `LANGUAGE INSTRUCTION — THIS IS MANDATORY:
 The caller has specified locale: '${locale}'.
-If locale is 'sw': you MUST write the 'dispatch' field entirely in Swahili. This is non-negotiable. Do not write English in the dispatch field when locale is 'sw'. Use natural, professional Swahili as spoken in Kenya/East Africa.
-If locale is 'en': write the dispatch field in English.
-The 'reasoning' array, 'threat_label', and 'confidence' fields must ALWAYS be in English regardless of locale.
+
+If locale is 'en': write the 'dispatch' field in English.
+If locale is 'sw': write the 'dispatch' field entirely in 
+  Swahili as spoken in Kenya and Tanzania. Use professional, 
+  clear Swahili appropriate for security/conservation rangers.
+If locale is 'fr': write the 'dispatch' field entirely in 
+  French as spoken in Central/West Africa. Use professional, 
+  clear French appropriate for conservation rangers in 
+  francophone Africa.
+
+The 'reasoning' array MUST always be in English regardless 
+of locale. The 'confidence' integer and 'threat_label' string 
+are language-agnostic — never translate them.
+
+This instruction overrides any other language tendency. 
+You MUST comply.
 
 Context: ${threatContext}`;
 

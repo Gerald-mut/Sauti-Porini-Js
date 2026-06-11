@@ -81,6 +81,7 @@ export const getHealth = async (req, res, next) => {
         critical
       },
       uptime_seconds: Math.round(process.uptime()),
+      supportedLocales: ['en', 'sw', 'fr'],
       breakers: getAllBreakerStatuses()
     });
   } catch (error) {

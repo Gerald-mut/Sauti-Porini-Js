@@ -181,10 +181,17 @@ async function main() {
   }
 
   const args = process.argv.slice(2);
+  const FAST_MODE = process.argv.includes('--fast');
+  
+  if (FAST_MODE) {
+    logger.info("[TEMP ENGINE] Fast mode ON — ramp interval: 1500ms");
+  }
+
   let mode = 'spike';
   let targetZone = null;
   let peak = 58;
-  let interval = 4000;
+  let interval = FAST_MODE ? 1500 : 4000;
+  let holdTime = FAST_MODE ? 3000 : 8000;
 
   args.forEach(arg => {
     if (arg.startsWith('--mode=')) mode = arg.split('=')[1];
@@ -218,7 +225,8 @@ async function main() {
     
     const spikeSummary = await triggerThermalSpike(targetZone, baselineReading.temp_celsius, {
       peakTemp: peak,
-      rampIntervalMs: interval
+      rampIntervalMs: interval,
+      holdMs: holdTime
     });
 
     logger.info("╔══════════════════════════════════════════╗");
